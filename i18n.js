@@ -64,10 +64,10 @@ window.GALM_I18N = {
       title_c: "We think it",
       title_d: "shouldn't.",
       principles: [
-        ["P.01", "Every document a comex team handles is a structured object pretending to be a piece of paper. We just write the translator."],
-        ["P.02", "A container in the wrong port is a thousand-dollar problem found three days late. We compress that loop to minutes."],
-        ["P.03", "AI without sources is folklore. Every answer GALM gives points back to the document, the event, or the rule."],
-        ["P.04", "Comex is global. So is our team — and so is the language. We work in PT, EN, ES, and ZH from day one."],
+        ["P.01", "Every comex document may look like paperwork, but underneath it is structured data. GALM turns that mess into usable information."],
+        ["P.02", "A container sent to the wrong port can turn into a thousand-dollar loss — and often shows up too late. GALM brings that discovery time down to minutes."],
+        ["P.03", "An answer without a source does not belong in operations. In GALM, every answer points back to the document, event, or rule behind it."],
+        ["P.04", "Comex is global by default. So is GALM. From day one, we work in PT, EN, ES, and ZH."],
       ],
     },
     foot: {
@@ -147,10 +147,10 @@ window.GALM_I18N = {
       title_c: "Achamos que",
       title_d: "não devia.",
       principles: [
-        ["P.01", "Todo documento que um time de comex toca é um objeto estruturado fingindo ser papel. A gente só escreve o tradutor."],
-        ["P.02", "Contêiner no porto errado é um problema de milhares de dólares descoberto três dias depois. A gente comprime esse loop pra minutos."],
-        ["P.03", "IA sem fonte é boato. Toda resposta da GALM aponta pro documento, evento ou regra que a originou."],
-        ["P.04", "Comex é global. Nosso time também — e o idioma também. Trabalhamos em PT, EN, ES e ZH desde o dia zero."],
+        ["P.01", "Todo documento de comex parece papel, mas no fundo é dado estruturado. A GALM transforma esse caos em informação usável."],
+        ["P.02", "Um contêiner no porto errado pode virar um prejuízo de milhares de dólares — e muitas vezes só aparece tarde demais. A GALM encurta esse tempo de descoberta para minutos."],
+        ["P.03", "Resposta sem fonte não serve para operação. Na GALM, toda informação aponta de volta para o documento, evento ou regra que justificou aquela resposta."],
+        ["P.04", "Comex já nasce global. A GALM também. Desde o primeiro dia, operamos em PT, EN, ES e ZH."],
       ],
     },
     foot: {
