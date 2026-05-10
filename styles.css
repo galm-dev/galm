@@ -15,7 +15,7 @@
   --r-1: 6px;
   --r-2: 14px;
   --r-3: 22px;
-  --hero-scroll-height: 700vh; /* adjust to control how long video scrubs before curtain rises */
+  --hero-scroll-height: 420vh; /* controls scrub distance before curtain rises */
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
