@@ -3,7 +3,7 @@ window.GALM_I18N = {
   en: {
     nav: { products: "Products", manifesto: "Manifesto", contact: "Contact" },
     hero: {
-      eyebrow: "GALM / 2026 / São Paulo · Worldwide",
+      eyebrow: "GALM / 2026 / Santos · Worldwide",
       h1a: "Global trade,",
       h1b: "intelligent.",
       h1c: "",
@@ -86,7 +86,7 @@ window.GALM_I18N = {
   pt: {
     nav: { products: "Produtos", manifesto: "Manifesto", contact: "Contato" },
     hero: {
-      eyebrow: "GALM / 2026 / São Paulo · Mundo",
+      eyebrow: "GALM / 2026 / Santos · Mundo",
       h1a: "Comércio global,",
       h1b: "inteligente.",
       h1c: "",
