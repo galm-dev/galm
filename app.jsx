@@ -235,7 +235,7 @@ function Hero({ t }) {
 
     const SCRUB_FPS = 18;
     const SEEK_EPSILON = 1 / 30;
-    const VIDEO_END_INTO_CURTAIN = 0.80;
+    const VIDEO_END_INTO_CURTAIN = 1;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const CONNECTION = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
     const SAVE_DATA = Boolean(CONNECTION && CONNECTION.saveData);
