@@ -374,7 +374,7 @@ function Hero({ t }) {
         <video
           ref={videoRef}
           className="hero-video"
-          poster="media/hero-poster.webp"
+          poster="media/hero-poster.png"
           muted
           playsInline
           preload="metadata"
