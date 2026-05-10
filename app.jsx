@@ -214,35 +214,31 @@ function SiteIntro() {
 
 // ─── Hero ───
 function Hero({ t }) {
-  const canvasRef = React.useRef(null);
+  const videoRef = React.useRef(null);
   const sectionRef = React.useRef(null);
   const targetRef = React.useRef(0);
   const currentRef = React.useRef(0);
   const [ready, setReady] = React.useState(false);
 
   React.useEffect(() => {
-    const canvas = canvasRef.current;
+    const video = videoRef.current;
     const sec = sectionRef.current;
-    if (!canvas || !sec) return;
+    if (!video || !sec) return;
 
-    let raf;
-    let running = false;
     let cancelled = false;
-    // Sparse array: pre-allocated to FRAMES size, slots are null until extracted.
-    // Non-sequential extraction fills slots out-of-order — findNearestFrame handles gaps.
-    let frames = null;
-    let totalFrames = 0;
-    let vw = 0, vh = 0;
-    let displayVid = null; // fallback display — never seeked during extraction (avoids jank)
-    let extractVid = null; // extraction only — seeked aggressively, never drawn to canvas directly
-    let lastDrawnIdx = -2; // skip redundant GPU draws when frame hasn't changed
+    let raf = 0;
+    let bounds = { top: 0, span: 1, videoEnd: 1 };
     let heroReadyDispatched = false;
+    let seeking = false;
+    let pendingTime = null;
+    let lastAppliedFrame = -1;
 
-    const MAX_FRAME_W = 1280;
-    const SCRUB_EASE = 0.075;
-    const FRAME_BASE = 'media/hero-frames/';
-
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const SCRUB_FPS = 18;
+    const SEEK_EPSILON = 1 / 30;
+    const VIDEO_END_INTO_CURTAIN = 0.80;
+    const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const CONNECTION = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    const SAVE_DATA = Boolean(CONNECTION && CONNECTION.saveData);
 
     const dispatchHeroReady = () => {
       if (cancelled || heroReadyDispatched) return;
@@ -250,245 +246,139 @@ function Hero({ t }) {
       window.dispatchEvent(new CustomEvent('galm:hero-ready'));
     };
 
-    // Walk outward from targetIdx to find the nearest already-extracted slot
-    const findNearest = (targetIdx) => {
-      if (!frames) return -1;
-      if (frames[targetIdx] !== null) return targetIdx;
-      for (let d = 1; d < totalFrames; d++) {
-        if (targetIdx - d >= 0 && frames[targetIdx - d] !== null) return targetIdx - d;
-        if (targetIdx + d < totalFrames && frames[targetIdx + d] !== null) return targetIdx + d;
-      }
-      return -1;
-    };
-
-    const drawFrame = (scrub) => {
-      if (!vw || !vh) return;
-      const cw = canvas.width, ch = canvas.height;
-      const cr = cw / ch, ir = vw / vh;
-      let dw, dh, dx, dy;
-      if (ir > cr) { dh = ch; dw = ch * ir; dx = (cw - dw) / 2; dy = 0; }
-      else { dw = cw; dh = cw / ir; dx = 0; dy = (ch - dh) / 2; }
-
-      const targetIdx = totalFrames > 0
-        ? Math.max(0, Math.min(totalFrames - 1, Math.round(scrub * (totalFrames - 1))))
-        : -1;
-
-      const nearest = findNearest(targetIdx);
-      if (nearest >= 0) {
-        if (nearest === lastDrawnIdx) return; // same frame already on canvas — skip
-        ctx.drawImage(frames[nearest], dx, dy, dw, dh);
-        lastDrawnIdx = nearest;
-      } else if (displayVid && displayVid.readyState >= 2) {
-        // No cached frames yet. displayVid stays at time=0 (never seeked during extraction)
-        // so this always shows the first video frame — stable, no jank.
-        lastDrawnIdx = -2;
-        ctx.drawImage(displayVid, dx, dy, dw, dh);
-      }
-    };
-
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      canvas.width = Math.round(window.innerWidth * dpr);
-      canvas.height = Math.round(window.innerHeight * dpr);
-      canvas.style.width = window.innerWidth + 'px';
-      canvas.style.height = window.innerHeight + 'px';
-      lastDrawnIdx = -2;
-      drawFrame(currentRef.current);
+      const rect = sec.getBoundingClientRect();
+      const pageY = window.scrollY || window.pageYOffset || 0;
+      const sectionHeight = sec.offsetHeight;
+      const viewportHeight = window.innerHeight || 1;
+      const span = Math.max(sectionHeight - viewportHeight, 1);
+      const curtainStart = Math.max(0, Math.min(1, (sectionHeight - 2 * viewportHeight) / span));
+
+      bounds = {
+        top: rect.top + pageY,
+        span,
+        videoEnd: curtainStart + (1 - curtainStart) * VIDEO_END_INTO_CURTAIN,
+      };
+
+      computeTarget();
     };
 
-const computeTarget = () => {
-  const rect = sec.getBoundingClientRect();
-  const total = sec.offsetHeight - window.innerHeight;
-  const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
-  const p = total > 0 ? scrolled / total : 0;
+    const quantizeTime = (time) => Math.round(time * SCRUB_FPS) / SCRUB_FPS;
 
-  const curtainStart =
-    (sec.offsetHeight - 2 * window.innerHeight) /
-    (sec.offsetHeight - window.innerHeight);
+    const applySeek = (time) => {
+      if (cancelled || !Number.isFinite(video.duration) || video.duration <= 0) return;
 
-  const VIDEO_END_INTO_CURTAIN = 0.80;
-  const videoEnd = curtainStart + (1 - curtainStart) * VIDEO_END_INTO_CURTAIN;
+      const clamped = Math.max(0, Math.min(video.duration, time));
+      const quantized = quantizeTime(clamped);
+      const frame = Math.round(quantized * SCRUB_FPS);
 
-  targetRef.current = Math.min(1, p / videoEnd);
+      pendingTime = quantized;
+      if (seeking) return;
+      if (frame === lastAppliedFrame && Math.abs(video.currentTime - quantized) < SEEK_EPSILON) {
+        pendingTime = null;
+        return;
+      }
 
-  if (!running) loop();
-};
+      pendingTime = null;
+      seeking = true;
+      lastAppliedFrame = frame;
+      video.currentTime = quantized;
+    };
 
-    const loop = () => {
-      running = true;
-      const next = currentRef.current + (targetRef.current - currentRef.current) * SCRUB_EASE;
-      currentRef.current = next;
-      drawFrame(next);
-      if (Math.abs(targetRef.current - next) > 0.0005) {
-        raf = requestAnimationFrame(loop);
-      } else {
-        running = false;
+    const flushSeek = () => {
+      raf = 0;
+      if (cancelled || REDUCE_MOTION || video.readyState < 1) return;
+      currentRef.current = targetRef.current;
+      applySeek(targetRef.current * video.duration);
+    };
+
+    const scheduleSeek = () => {
+      if (!raf) raf = requestAnimationFrame(flushSeek);
+    };
+
+    const computeTarget = () => {
+      const pageY = window.scrollY || window.pageYOffset || 0;
+      const scrolled = Math.min(Math.max(pageY - bounds.top, 0), bounds.span);
+      const progress = bounds.span > 0 ? scrolled / bounds.span : 0;
+      targetRef.current = Math.min(1, progress / Math.max(bounds.videoEnd, 0.001));
+      scheduleSeek();
+    };
+
+    const onSeeked = () => {
+      seeking = false;
+      if (pendingTime !== null) {
+        const next = pendingTime;
+        pendingTime = null;
+        applySeek(next);
       }
     };
 
-    // Yields main thread between extraction steps — pauses during active scroll, resumes on idle
-    const yieldToMain = () => new Promise(resolve => {
-      if (typeof requestIdleCallback !== 'undefined') {
-        requestIdleCallback(resolve, { timeout: 50 });
-      } else {
-        setTimeout(resolve, 0);
-      }
-    });
-
-    const buildOrder = (FRAMES) => {
-      const seen = new Set();
-      const order = [];
-      for (const r of [0, 1, 0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875]) {
-        const idx = Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))));
-        if (!seen.has(idx)) { order.push(idx); seen.add(idx); }
-      }
-      for (let i = 0; i < FRAMES; i++) {
-        if (!seen.has(i)) order.push(i);
-      }
-      return order;
-    };
-
-    const criticalFrameIndexes = (FRAMES) => (
-      [0, 0.25, 0.5, 0.75, 1].map((r) =>
-        Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))))
-      )
-    );
-
-    const criticalFramesReady = (FRAMES) => (
-      criticalFrameIndexes(FRAMES).every((idx) => frames && frames[idx])
-    );
-
-    const loadManifestFrame = async (fileNames, frameIdx) => {
-      const response = await fetch(FRAME_BASE + fileNames[frameIdx]);
-      if (!response.ok) throw new Error(`frame ${frameIdx} failed`);
-      const blob = await response.blob();
-      if (cancelled) return null;
-      return createImageBitmap(blob);
-    };
-
-    const loadFromManifest = async (manifest) => {
-      const fileNames = manifest.frames;
-      const FRAMES = fileNames.length;
-      if (FRAMES < 2) return;
-      totalFrames = FRAMES;
-      if (!frames || frames.length !== FRAMES) frames = new Array(FRAMES).fill(null);
-      for (const frameIdx of buildOrder(FRAMES)) {
-        if (cancelled) return;
-        if (frames[frameIdx]) continue;
-        try {
-          const bitmap = await loadManifestFrame(fileNames, frameIdx);
-          if (cancelled) return;
-          frames[frameIdx] = bitmap;
-          if (criticalFramesReady(FRAMES)) dispatchHeroReady();
-        } catch (_) {}
-        await yieldToMain();
-      }
-    };
-
-    const loadFromVideo = async (dur) => {
-      extractVid = document.createElement('video');
-      extractVid.muted = true; extractVid.playsInline = true; extractVid.preload = 'auto';
-      extractVid.src = 'media/hero.mp4';
-      await new Promise((resolve, reject) => {
-        if (extractVid.readyState >= 1) { resolve(); return; }
-        extractVid.addEventListener('loadedmetadata', resolve, { once: true });
-        extractVid.addEventListener('error', reject, { once: true });
-      });
+    const onLoadedMetadata = () => {
       if (cancelled) return;
-      const FRAMES = Math.min(60, Math.max(20, Math.round(dur * 24)));
-      totalFrames = FRAMES;
-      frames = new Array(FRAMES).fill(null);
-      const scale = Math.min(1, MAX_FRAME_W / vw);
-      const fw = Math.round(vw * scale), fh = Math.round(vh * scale);
-      for (const frameIdx of buildOrder(FRAMES)) {
-        if (cancelled) return;
-        const tt = (frameIdx / (FRAMES - 1)) * dur;
-        await new Promise(resolve => {
-          const onSeeked = () => { extractVid.removeEventListener('seeked', onSeeked); resolve(); };
-          extractVid.addEventListener('seeked', onSeeked);
-          try { extractVid.currentTime = Math.min(tt, dur - 0.001); }
-          catch (e) { resolve(); }
-        });
-        if (cancelled) return;
-        const c = document.createElement('canvas');
-        c.width = fw; c.height = fh;
-        c.getContext('2d').drawImage(extractVid, 0, 0, fw, fh);
-        frames[frameIdx] = c;
-        await yieldToMain();
-      }
-      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
+      video.pause();
+      setReady(true);
+      resize();
+      scheduleSeek();
+      dispatchHeroReady();
     };
 
-    const preload = async () => {
-      try {
-        let manifest = null;
-        await fetch('media/hero-frames/manifest.json')
-          .then(r => r.ok ? r.json() : null)
-          .then(m => { manifest = m; })
-          .catch(() => {});
-        if (cancelled) return;
-
-        if (manifest && Array.isArray(manifest.frames) && manifest.frames.length >= 2) {
-          totalFrames = manifest.frames.length;
-          frames = new Array(totalFrames).fill(null);
-          let firstFrame = null;
-          try {
-            firstFrame = await loadManifestFrame(manifest.frames, 0);
-          } catch (_) {}
-          if (cancelled) return;
-          if (firstFrame) {
-            frames[0] = firstFrame;
-            vw = manifest.width || firstFrame.width;
-            vh = manifest.height || firstFrame.height;
-            setReady(true);
-            resize();
-            drawFrame(0);
-            computeTarget();
-            if (criticalFramesReady(totalFrames)) dispatchHeroReady();
-            await loadFromManifest(manifest);
-            return;
-          }
-        }
-
-        displayVid = document.createElement('video');
-        displayVid.muted = true; displayVid.playsInline = true; displayVid.preload = 'auto';
-        displayVid.src = 'media/hero.mp4';
-        await new Promise((resolve, reject) => {
-          if (displayVid.readyState >= 1) { resolve(); return; }
-          displayVid.addEventListener('loadedmetadata', resolve, { once: true });
-          displayVid.addEventListener('error', reject, { once: true });
-        });
-        if (cancelled) return;
-        vw = displayVid.videoWidth;
-        vh = displayVid.videoHeight;
-        setReady(true);
-        resize();
-        computeTarget();
-        dispatchHeroReady();
-        await loadFromVideo(displayVid.duration || 1);
-      } catch (e) {
-        console.warn('hero preload failed', e);
-      }
+    const startLoad = () => {
+      if (cancelled || video.dataset.loaded === 'true') return;
+      video.dataset.loaded = 'true';
+      video.preload = 'auto';
+      video.src = 'media/hero-scrub.mp4';
+      video.load();
     };
 
-    preload();
+    if (REDUCE_MOTION || SAVE_DATA) {
+      setReady(true);
+      dispatchHeroReady();
+      return () => { cancelled = true; };
+    }
+
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('seeked', onSeeked);
     window.addEventListener('scroll', computeTarget, { passive: true });
     window.addEventListener('resize', resize);
 
+    let observer = null;
+    if ('IntersectionObserver' in window) {
+      observer = new IntersectionObserver((entries) => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          startLoad();
+          observer.disconnect();
+        }
+      }, { rootMargin: '800px 0px' });
+      observer.observe(sec);
+    } else {
+      startLoad();
+    }
+    resize();
+
     return () => {
       cancelled = true;
+      if (observer) observer.disconnect();
       window.removeEventListener('scroll', computeTarget);
       window.removeEventListener('resize', resize);
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('seeked', onSeeked);
       cancelAnimationFrame(raf);
-      if (displayVid) { try { displayVid.src = ''; } catch (_) {} displayVid = null; }
-      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
+      video.removeAttribute('src');
+      video.load();
     };
   }, []);
 
   return (
     <section className="hero" id="top" data-screen-label="01 Hero" ref={sectionRef}>
       <div className="hero-video-wrap" aria-hidden="true">
-        <canvas ref={canvasRef} className="hero-video"></canvas>
+        <video
+          ref={videoRef}
+          className="hero-video"
+          poster="media/hero-poster.webp"
+          muted
+          playsInline
+          preload="metadata"
+        />
         {!ready && (
           <div className="hero-loading">
             <span>LOADING…</span>
