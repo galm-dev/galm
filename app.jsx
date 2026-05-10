@@ -2,14 +2,14 @@
 
 const { useState, useEffect, useRef } = React;
 
-const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "palette": ["#D8FF3D", "#0A0A0B", "#F2EFE6"],
+const TWEAK_DEFAULTS = {
+  "palette": ["#4FB6D8", "#0A0A0B", "#F2EFE6"],
   "fontPair": "bricolage",
   "intensity": "balanced"
-}/*EDITMODE-END*/;
+};
 
 const PALETTES = {
-  lime:    ["#D8FF3D", "#0A0A0B", "#F2EFE6"],
+  lime:    ["#4FB6D8", "#0A0A0B", "#F2EFE6"],
   orange:  ["#FF5A1F", "#0A0A0B", "#F2EFE6"],
   blue:    ["#5B5BFF", "#0A0A0B", "#F2EFE6"],
   ice:     ["#7DF9FF", "#06080A", "#EAF4F7"],
@@ -134,22 +134,388 @@ function Nav({ lang, setLang, t }) {
   );
 }
 
+// ─── Site intro ───
+function SiteIntro() {
+  const [leaving, setLeaving] = React.useState(false);
+  const [hidden, setHidden] = React.useState(false);
+
+  React.useEffect(() => {
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const minDelay = reduceMotion ? 450 : 1800;
+    const maxDelay = reduceMotion ? 1600 : 4500;
+    let minDone = false;
+    let heroReady = false;
+    let leaveStarted = false;
+    let hideTimer;
+
+    document.body.classList.add('intro-lock');
+
+    const beginLeave = () => {
+      if (leaveStarted) return;
+      leaveStarted = true;
+      document.body.classList.remove('intro-lock');
+      setLeaving(true);
+      hideTimer = window.setTimeout(() => setHidden(true), reduceMotion ? 380 : 1050);
+    };
+
+    const maybeLeave = () => {
+      if (minDone && heroReady) beginLeave();
+    };
+
+    const onHeroReady = () => {
+      heroReady = true;
+      maybeLeave();
+    };
+
+    const minTimer = window.setTimeout(() => {
+      minDone = true;
+      maybeLeave();
+    }, minDelay);
+    const maxTimer = window.setTimeout(beginLeave, maxDelay);
+
+    window.addEventListener('galm:hero-ready', onHeroReady);
+
+    return () => {
+      window.removeEventListener('galm:hero-ready', onHeroReady);
+      window.clearTimeout(minTimer);
+      window.clearTimeout(maxTimer);
+      window.clearTimeout(hideTimer);
+      document.body.classList.remove('intro-lock');
+    };
+  }, []);
+
+  if (hidden) return null;
+
+  return (
+    <div className={`site-intro${leaving ? ' is-leaving' : ''}`} aria-hidden="true">
+      <div className="intro-half intro-half-top">
+        <div className="intro-logo intro-logo-top">
+          <div className="intro-wordmark">
+            <span className="intro-mark-wrap"><GImg className="g-img--intro" /></span>
+            <div className="intro-word-reveal">
+              <span className="intro-alm">ALM</span><span className="intro-ai">.AI</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="intro-half intro-half-bottom">
+        <div className="intro-logo intro-logo-bottom">
+          <div className="intro-wordmark">
+            <span className="intro-mark-wrap"><GImg className="g-img--intro" /></span>
+            <div className="intro-word-reveal">
+              <span className="intro-alm">ALM</span><span className="intro-ai">.AI</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Hero ───
 function Hero({ t }) {
+  const canvasRef = React.useRef(null);
+  const sectionRef = React.useRef(null);
+  const targetRef = React.useRef(0);
+  const currentRef = React.useRef(0);
+  const [ready, setReady] = React.useState(false);
+
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    const sec = sectionRef.current;
+    if (!canvas || !sec) return;
+
+    let raf;
+    let running = false;
+    let cancelled = false;
+    // Sparse array: pre-allocated to FRAMES size, slots are null until extracted.
+    // Non-sequential extraction fills slots out-of-order — findNearestFrame handles gaps.
+    let frames = null;
+    let totalFrames = 0;
+    let vw = 0, vh = 0;
+    let displayVid = null; // fallback display — never seeked during extraction (avoids jank)
+    let extractVid = null; // extraction only — seeked aggressively, never drawn to canvas directly
+    let lastDrawnIdx = -2; // skip redundant GPU draws when frame hasn't changed
+    let heroReadyDispatched = false;
+
+    const MAX_FRAME_W = 1280;
+    const SCRUB_EASE = 0.075;
+    const FRAME_BASE = 'media/hero-frames/';
+
+    const ctx = canvas.getContext('2d', { alpha: false });
+
+    const dispatchHeroReady = () => {
+      if (cancelled || heroReadyDispatched) return;
+      heroReadyDispatched = true;
+      window.dispatchEvent(new CustomEvent('galm:hero-ready'));
+    };
+
+    // Walk outward from targetIdx to find the nearest already-extracted slot
+    const findNearest = (targetIdx) => {
+      if (!frames) return -1;
+      if (frames[targetIdx] !== null) return targetIdx;
+      for (let d = 1; d < totalFrames; d++) {
+        if (targetIdx - d >= 0 && frames[targetIdx - d] !== null) return targetIdx - d;
+        if (targetIdx + d < totalFrames && frames[targetIdx + d] !== null) return targetIdx + d;
+      }
+      return -1;
+    };
+
+    const drawFrame = (scrub) => {
+      if (!vw || !vh) return;
+      const cw = canvas.width, ch = canvas.height;
+      const cr = cw / ch, ir = vw / vh;
+      let dw, dh, dx, dy;
+      if (ir > cr) { dh = ch; dw = ch * ir; dx = (cw - dw) / 2; dy = 0; }
+      else { dw = cw; dh = cw / ir; dx = 0; dy = (ch - dh) / 2; }
+
+      const targetIdx = totalFrames > 0
+        ? Math.max(0, Math.min(totalFrames - 1, Math.round(scrub * (totalFrames - 1))))
+        : -1;
+
+      const nearest = findNearest(targetIdx);
+      if (nearest >= 0) {
+        if (nearest === lastDrawnIdx) return; // same frame already on canvas — skip
+        ctx.drawImage(frames[nearest], dx, dy, dw, dh);
+        lastDrawnIdx = nearest;
+      } else if (displayVid && displayVid.readyState >= 2) {
+        // No cached frames yet. displayVid stays at time=0 (never seeked during extraction)
+        // so this always shows the first video frame — stable, no jank.
+        lastDrawnIdx = -2;
+        ctx.drawImage(displayVid, dx, dy, dw, dh);
+      }
+    };
+
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      lastDrawnIdx = -2;
+      drawFrame(currentRef.current);
+    };
+
+const computeTarget = () => {
+  const rect = sec.getBoundingClientRect();
+  const total = sec.offsetHeight - window.innerHeight;
+  const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
+  const p = total > 0 ? scrolled / total : 0;
+
+  const curtainStart =
+    (sec.offsetHeight - 2 * window.innerHeight) /
+    (sec.offsetHeight - window.innerHeight);
+
+  const VIDEO_END_INTO_CURTAIN = 0.80;
+  const videoEnd = curtainStart + (1 - curtainStart) * VIDEO_END_INTO_CURTAIN;
+
+  targetRef.current = Math.min(1, p / videoEnd);
+
+  if (!running) loop();
+};
+
+    const loop = () => {
+      running = true;
+      const next = currentRef.current + (targetRef.current - currentRef.current) * SCRUB_EASE;
+      currentRef.current = next;
+      drawFrame(next);
+      if (Math.abs(targetRef.current - next) > 0.0005) {
+        raf = requestAnimationFrame(loop);
+      } else {
+        running = false;
+      }
+    };
+
+    // Yields main thread between extraction steps — pauses during active scroll, resumes on idle
+    const yieldToMain = () => new Promise(resolve => {
+      if (typeof requestIdleCallback !== 'undefined') {
+        requestIdleCallback(resolve, { timeout: 50 });
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+
+    const buildOrder = (FRAMES) => {
+      const seen = new Set();
+      const order = [];
+      for (const r of [0, 1, 0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875]) {
+        const idx = Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))));
+        if (!seen.has(idx)) { order.push(idx); seen.add(idx); }
+      }
+      for (let i = 0; i < FRAMES; i++) {
+        if (!seen.has(i)) order.push(i);
+      }
+      return order;
+    };
+
+    const criticalFrameIndexes = (FRAMES) => (
+      [0, 0.25, 0.5, 0.75, 1].map((r) =>
+        Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))))
+      )
+    );
+
+    const criticalFramesReady = (FRAMES) => (
+      criticalFrameIndexes(FRAMES).every((idx) => frames && frames[idx])
+    );
+
+    const loadManifestFrame = async (fileNames, frameIdx) => {
+      const response = await fetch(FRAME_BASE + fileNames[frameIdx]);
+      if (!response.ok) throw new Error(`frame ${frameIdx} failed`);
+      const blob = await response.blob();
+      if (cancelled) return null;
+      return createImageBitmap(blob);
+    };
+
+    const loadFromManifest = async (manifest) => {
+      const fileNames = manifest.frames;
+      const FRAMES = fileNames.length;
+      if (FRAMES < 2) return;
+      totalFrames = FRAMES;
+      if (!frames || frames.length !== FRAMES) frames = new Array(FRAMES).fill(null);
+      for (const frameIdx of buildOrder(FRAMES)) {
+        if (cancelled) return;
+        if (frames[frameIdx]) continue;
+        try {
+          const bitmap = await loadManifestFrame(fileNames, frameIdx);
+          if (cancelled) return;
+          frames[frameIdx] = bitmap;
+          if (criticalFramesReady(FRAMES)) dispatchHeroReady();
+        } catch (_) {}
+        await yieldToMain();
+      }
+    };
+
+    const loadFromVideo = async (dur) => {
+      extractVid = document.createElement('video');
+      extractVid.muted = true; extractVid.playsInline = true; extractVid.preload = 'auto';
+      extractVid.src = 'media/hero.mp4';
+      await new Promise((resolve, reject) => {
+        if (extractVid.readyState >= 1) { resolve(); return; }
+        extractVid.addEventListener('loadedmetadata', resolve, { once: true });
+        extractVid.addEventListener('error', reject, { once: true });
+      });
+      if (cancelled) return;
+      const FRAMES = Math.min(60, Math.max(20, Math.round(dur * 24)));
+      totalFrames = FRAMES;
+      frames = new Array(FRAMES).fill(null);
+      const scale = Math.min(1, MAX_FRAME_W / vw);
+      const fw = Math.round(vw * scale), fh = Math.round(vh * scale);
+      for (const frameIdx of buildOrder(FRAMES)) {
+        if (cancelled) return;
+        const tt = (frameIdx / (FRAMES - 1)) * dur;
+        await new Promise(resolve => {
+          const onSeeked = () => { extractVid.removeEventListener('seeked', onSeeked); resolve(); };
+          extractVid.addEventListener('seeked', onSeeked);
+          try { extractVid.currentTime = Math.min(tt, dur - 0.001); }
+          catch (e) { resolve(); }
+        });
+        if (cancelled) return;
+        const c = document.createElement('canvas');
+        c.width = fw; c.height = fh;
+        c.getContext('2d').drawImage(extractVid, 0, 0, fw, fh);
+        frames[frameIdx] = c;
+        await yieldToMain();
+      }
+      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
+    };
+
+    const preload = async () => {
+      try {
+        let manifest = null;
+        await fetch('media/hero-frames/manifest.json')
+          .then(r => r.ok ? r.json() : null)
+          .then(m => { manifest = m; })
+          .catch(() => {});
+        if (cancelled) return;
+
+        if (manifest && Array.isArray(manifest.frames) && manifest.frames.length >= 2) {
+          totalFrames = manifest.frames.length;
+          frames = new Array(totalFrames).fill(null);
+          let firstFrame = null;
+          try {
+            firstFrame = await loadManifestFrame(manifest.frames, 0);
+          } catch (_) {}
+          if (cancelled) return;
+          if (firstFrame) {
+            frames[0] = firstFrame;
+            vw = manifest.width || firstFrame.width;
+            vh = manifest.height || firstFrame.height;
+            setReady(true);
+            resize();
+            drawFrame(0);
+            computeTarget();
+            if (criticalFramesReady(totalFrames)) dispatchHeroReady();
+            await loadFromManifest(manifest);
+            return;
+          }
+        }
+
+        displayVid = document.createElement('video');
+        displayVid.muted = true; displayVid.playsInline = true; displayVid.preload = 'auto';
+        displayVid.src = 'media/hero.mp4';
+        await new Promise((resolve, reject) => {
+          if (displayVid.readyState >= 1) { resolve(); return; }
+          displayVid.addEventListener('loadedmetadata', resolve, { once: true });
+          displayVid.addEventListener('error', reject, { once: true });
+        });
+        if (cancelled) return;
+        vw = displayVid.videoWidth;
+        vh = displayVid.videoHeight;
+        setReady(true);
+        resize();
+        computeTarget();
+        dispatchHeroReady();
+        await loadFromVideo(displayVid.duration || 1);
+      } catch (e) {
+        console.warn('hero preload failed', e);
+      }
+    };
+
+    preload();
+    window.addEventListener('scroll', computeTarget, { passive: true });
+    window.addEventListener('resize', resize);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('scroll', computeTarget);
+      window.removeEventListener('resize', resize);
+      cancelAnimationFrame(raf);
+      if (displayVid) { try { displayVid.src = ''; } catch (_) {} displayVid = null; }
+      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
+    };
+  }, []);
+
   return (
-    <section className="hero" id="top" data-screen-label="01 Hero">
-      <div className="eyebrow">{t.hero.eyebrow}</div>
-      <h1 className="hero-headline">
-        <span className="word"><span style={{animationDelay: '.05s'}}>{t.hero.h1a}</span></span>
-        <br />
-        <span className="word"><span className="ital" style={{animationDelay: '.18s'}}>{t.hero.h1b}</span></span>
-      </h1>
-      <div className="hero-bottom">
-        <p className="hero-sub reveal">{t.hero.sub}</p>
-        <div className="hero-meta reveal">
-          <div className="row"><span>↳</span><span>{t.hero.meta1}</span></div>
-          <div className="row"><span>↳</span><span>{t.hero.meta2}</span></div>
-          <div className="row"><span>●</span><span>{t.hero.meta3}</span></div>
+    <section className="hero" id="top" data-screen-label="01 Hero" ref={sectionRef}>
+      <div className="hero-video-wrap" aria-hidden="true">
+        <canvas ref={canvasRef} className="hero-video"></canvas>
+        {!ready && (
+          <div className="hero-loading">
+            <span>LOADING…</span>
+          </div>
+        )}
+        <div className="hero-video-vignette"></div>
+        <div className="hero-inner">
+          <div className="eyebrow">{t.hero.eyebrow}</div>
+          <h1 className="hero-headline">
+            <span className="word"><span style={{animationDelay: '.05s'}}>{t.hero.h1a}</span></span>
+            <br />
+            <span className="word"><span className="ital" style={{animationDelay: '.18s'}}>{t.hero.h1b}</span></span>
+          </h1>
+          <div className="hero-bottom">
+            <p className="hero-sub reveal">{t.hero.sub}</p>
+            <div className="hero-meta reveal">
+              <div className="row"><span>↳</span><span>{t.hero.meta1}</span></div>
+              <div className="row"><span>↳</span><span>{t.hero.meta2}</span></div>
+              <div className="row"><span>●</span><span>{t.hero.meta3}</span></div>
+            </div>
+          </div>
+          <div className="hero-scrollhint" aria-hidden="true">
+            <span>SCROLL</span>
+            <svg viewBox="0 0 12 24" width="10" height="20" fill="none" stroke="currentColor" strokeWidth="1.4">
+              <path d="M6 2v18M2 16l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </div>
         </div>
       </div>
     </section>
@@ -157,11 +523,12 @@ function Hero({ t }) {
 }
 
 // ─── Ticker ───
-function Ticker({ t }) {
+function Ticker({ t, className = '' }) {
   const items = t.ticker;
   const repeated = [...items, ...items, ...items, ...items];
+  const classes = ['ticker', className].filter(Boolean).join(' ');
   return (
-    <div className="ticker" aria-hidden="true">
+    <div className={classes} aria-hidden="true">
       <div className="ticker-inner">
         {repeated.map((it, i) => (
           <span key={i}>
@@ -223,7 +590,8 @@ function TrackingAnim() {
 function CopilotAnim() {
   return (
     <div className="anim" style={{background: 'radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 60%)'}}>
-      <svg width="100%" height="100%" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" style={{position: 'absolute', inset: 0}}>
+      <img src="images/world.png" alt="" aria-hidden="true" className="copilot-world" />
+      <svg width="100%" height="100%" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid slice" style={{position: 'absolute', inset: 0, zIndex: 1}}>
         <g stroke="var(--line-2)" fill="none">
           <circle cx="200" cy="200" r="60" />
           <circle cx="200" cy="200" r="110" />
@@ -425,13 +793,17 @@ function App() {
 
   return (
     <div className="shell">
+      <SiteIntro />
       <div className="grain"></div>
       <Nav lang={lang} setLang={setLang} t={t} />
       <Hero t={t} />
-      <Ticker t={t} />
-      <Products t={t} onOpen={setOpen} />
-      <Manifesto t={t} />
-      <Foot t={t} />
+      <div className="curtain-stack">
+        <Ticker t={t} />
+        <Products t={t} onOpen={setOpen} />
+        <Ticker t={t} className="ticker-between" />
+        <Manifesto t={t} />
+        <Foot t={t} />
+      </div>
       <Orb t={t} />
       {open && <Modal product={open} t={t} onClose={() => setOpen(null)} />}
 
