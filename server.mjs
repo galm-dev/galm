@@ -1,5 +1,5 @@
 import { createReadStream, statSync } from 'node:fs';
-import { extname, join, normalize, resolve } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { createServer } from 'node:http';
 
 const root = resolve('.');
@@ -38,6 +38,8 @@ createServer((req, res) => {
 
   const type = types[extname(file)] || 'application/octet-stream';
   const range = req.headers.range;
+  const isHeroScrubAsset = file.includes(`${sep}media${sep}hero-frames${sep}`) && extname(file) === '.webp';
+  const cacheControl = isHeroScrubAsset ? 'public, max-age=3600' : 'no-store';
 
   if (range) {
     const match = /bytes=(\d*)-(\d*)/.exec(range);
@@ -52,7 +54,7 @@ createServer((req, res) => {
 
     res.writeHead(206, {
       'Accept-Ranges': 'bytes',
-      'Cache-Control': 'no-store',
+      'Cache-Control': cacheControl,
       'Content-Range': `bytes ${start}-${end}/${stat.size}`,
       'Content-Length': end - start + 1,
       'Content-Type': type,
@@ -63,7 +65,7 @@ createServer((req, res) => {
 
   res.writeHead(200, {
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'no-store',
+    'Cache-Control': cacheControl,
     'Content-Length': stat.size,
     'Content-Type': type,
   });

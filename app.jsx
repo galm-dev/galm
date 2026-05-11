@@ -217,10 +217,9 @@ function Hero({ t }) {
   const canvasRef = React.useRef(null);
   const sectionRef = React.useRef(null);
   const targetRef = React.useRef(0);
-  const currentRef = React.useRef(0);
   const framesRef = React.useRef([]);
   const loadedFramesRef = React.useRef(new Set());
-  const loadingFramesRef = React.useRef(new Set());
+  const loadingFramesRef = React.useRef(new Map());
   const [ready, setReady] = React.useState(false);
 
   React.useEffect(() => {
@@ -241,15 +240,23 @@ function Hero({ t }) {
     let heroReadyDispatched = false;
 
     const FRAME_COUNT = 361;
-    const FRAME_BASE_PATH = 'media/hero-frames/';
+    const FRAME_WIDTH = 1920;
+    const FRAME_HEIGHT = 1080;
+    const FRAME_BASE_PATH = '/media/hero-frames/';
     const FRAME_EXTENSION = 'webp';
     const FRAME_PAD = 4;
     const FRAME_PREFIX = 'frame_';
     const VIDEO_END_INTO_CURTAIN = 1.08;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const KEY_FRAME_INDEXES = [0, 0.25, 0.5, 0.75, 1].map((ratio) =>
-      Math.max(0, Math.min(FRAME_COUNT - 1, Math.round(ratio * (FRAME_COUNT - 1))))
-    );
+    const PRELOAD_STRIDE = 5;
+    const PRELOAD_CONCURRENCY = 8;
+    const PRIORITY_PRELOAD_RADIUS = 16;
+    const PRIORITY_PRELOAD_LIMIT = 10;
+    const preloadQueuedFrames = new Set();
+    let preloadQueue = [];
+    let preloadActive = 0;
+    let preloadScheduled = false;
+    let interleavedPreloadStarted = false;
 
     const dispatchHeroReady = () => {
       if (cancelled || heroReadyDispatched) return;
@@ -261,13 +268,13 @@ function Hero({ t }) {
       `${FRAME_BASE_PATH}${FRAME_PREFIX}${String(idx + 1).padStart(FRAME_PAD, '0')}.${FRAME_EXTENSION}`
     );
 
-    const drawCover = (image) => {
+    const drawFrameCover = (image) => {
       const cw = canvas.width;
       const ch = canvas.height;
       if (!cw || !ch || !image) return;
       const cr = cw / ch;
-      const iw = image.naturalWidth || 1920;
-      const ih = image.naturalHeight || 1080;
+      const iw = image.naturalWidth || image.width || FRAME_WIDTH;
+      const ih = image.naturalHeight || image.height || FRAME_HEIGHT;
       const ir = iw / ih;
       let dw, dh, dx, dy;
       if (ir > cr) {
@@ -284,48 +291,165 @@ function Hero({ t }) {
       ctx.drawImage(image, dx, dy, dw, dh);
     };
 
-    const drawCached = (idx) => {
-      const image = framesRef.current[idx];
-      if (!image) return false;
-      drawCover(image);
-      lastDrawnIdx = idx;
-      return true;
+	    const drawCached = (idx) => {
+	      const image = framesRef.current[idx];
+	      if (!image) return false;
+	      drawFrameCover(image);
+	      lastDrawnIdx = idx;
+	      return true;
+	    };
+
+	    const findNearestCached = (idx) => {
+	      if (framesRef.current[idx]) return idx;
+
+	      let bestIdx = -1;
+	      let bestDistance = Infinity;
+	      loadedFramesRef.current.forEach((candidate) => {
+	        const distance = Math.abs(candidate - idx);
+	        if (distance < bestDistance) {
+	          bestIdx = candidate;
+	          bestDistance = distance;
+	        }
+	      });
+
+      return bestIdx;
     };
 
-    const findNearestCached = (idx) => {
-      if (framesRef.current[idx]) return idx;
-      for (let d = 1; d < FRAME_COUNT; d++) {
-        if (idx - d >= 0 && framesRef.current[idx - d]) return idx - d;
-        if (idx + d < FRAME_COUNT && framesRef.current[idx + d]) return idx + d;
-      }
-      return -1;
+    const closeFrame = (image) => {
+      if (image && typeof image.close === 'function') image.close();
     };
 
-    const loadFrame = (idx) => {
+	    const decodeFrameBlob = (blob) => {
+	      if ('createImageBitmap' in window) return createImageBitmap(blob);
+
+	      return new Promise((resolve) => {
+	        const img = new Image();
+	        const url = URL.createObjectURL(blob);
+	        img.decoding = 'async';
+	        img.onload = () => {
+	          URL.revokeObjectURL(url);
+	          resolve(img);
+	        };
+	        img.onerror = () => {
+	          URL.revokeObjectURL(url);
+	          resolve(null);
+	        };
+	        img.src = url;
+	      });
+	    };
+
+    const loadFrame = (idx, priority = 'low') => {
       if (idx < 0 || idx >= FRAME_COUNT) return Promise.resolve(null);
       if (framesRef.current[idx]) return Promise.resolve(framesRef.current[idx]);
-      if (loadingFramesRef.current.has(idx)) return Promise.resolve(null);
+      if (loadingFramesRef.current.has(idx)) return loadingFramesRef.current.get(idx);
 
-      loadingFramesRef.current.add(idx);
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.decoding = 'async';
-        img.onload = () => {
-          loadingFramesRef.current.delete(idx);
-          if (cancelled) {
-            resolve(null);
-            return;
+      const promise = fetch(frameSrc(idx), { cache: 'force-cache', priority })
+        .then((response) => {
+          if (!response.ok) throw new Error('Hero frame load failed');
+          return response.blob();
+        })
+        .then(decodeFrameBlob)
+        .then((image) => {
+          if (!image || cancelled) {
+            closeFrame(image);
+            return null;
           }
-          framesRef.current[idx] = img;
+          framesRef.current[idx] = image;
           loadedFramesRef.current.add(idx);
-          resolve(img);
-        };
-        img.onerror = () => {
+          return image;
+        })
+        .catch(() => null)
+        .finally(() => {
           loadingFramesRef.current.delete(idx);
-          resolve(null);
-        };
-        img.src = frameSrc(idx);
+        });
+
+      loadingFramesRef.current.set(idx, promise);
+      return promise;
+    };
+
+    const scheduleIdle = (fn, timeout = 120) => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(fn, { timeout });
+      } else {
+        setTimeout(fn, 16);
+      }
+    };
+
+    const pumpPreloadQueue = () => {
+      if (cancelled) return;
+
+      while (preloadActive < PRELOAD_CONCURRENCY && preloadQueue.length) {
+        const idx = preloadQueue.shift();
+        if (idx == null || framesRef.current[idx] || loadingFramesRef.current.has(idx)) {
+          continue;
+        }
+
+        preloadActive += 1;
+        loadFrame(idx).finally(() => {
+          preloadActive -= 1;
+          if (preloadQueue.length) schedulePreloadQueue();
+        });
+      }
+    };
+
+    const schedulePreloadQueue = () => {
+      if (preloadScheduled || cancelled) return;
+      preloadScheduled = true;
+
+      const run = () => {
+        preloadScheduled = false;
+        pumpPreloadQueue();
+      };
+
+      scheduleIdle(run, 160);
+    };
+
+    const queuePreloadFrames = (indexes, front = false) => {
+      const next = [];
+
+      indexes.forEach((idx) => {
+        if (idx < 0 || idx >= FRAME_COUNT) return;
+        if (framesRef.current[idx] || loadingFramesRef.current.has(idx)) return;
+        if (preloadQueuedFrames.has(idx)) {
+          if (front) {
+            preloadQueue = preloadQueue.filter((queuedIdx) => queuedIdx !== idx);
+            next.push(idx);
+          }
+          return;
+        }
+        preloadQueuedFrames.add(idx);
+        next.push(idx);
       });
+
+      preloadQueue = front ? [...next, ...preloadQueue] : [...preloadQueue, ...next];
+      schedulePreloadQueue();
+    };
+
+    const buildInterleavedOrder = () => {
+      const order = [];
+      for (let offset = 0; offset < PRELOAD_STRIDE; offset += 1) {
+        for (let idx = offset; idx < FRAME_COUNT; idx += PRELOAD_STRIDE) {
+          order.push(idx);
+        }
+      }
+      return order;
+    };
+
+    const preloadFramesAround = (idx) => {
+      const wanted = [idx];
+
+      for (let d = 1; d <= PRIORITY_PRELOAD_RADIUS && wanted.length < PRIORITY_PRELOAD_LIMIT; d += 1) {
+        if (idx + d < FRAME_COUNT) wanted.push(idx + d);
+        if (idx - d >= 0 && wanted.length < PRIORITY_PRELOAD_LIMIT) wanted.push(idx - d);
+      }
+
+      queuePreloadFrames(wanted, true);
+    };
+
+    const startInterleavedPreload = () => {
+      if (interleavedPreloadStarted) return;
+      interleavedPreloadStarted = true;
+      queuePreloadFrames(buildInterleavedOrder());
     };
 
     const getTargetIndex = () => {
@@ -362,19 +486,17 @@ function Hero({ t }) {
     const flushDraw = () => {
       raf = 0;
       if (cancelled) return;
-      currentRef.current = targetRef.current;
 
       const idx = getTargetIndex();
       if (idx === lastDrawnIdx) return;
-      if (!drawCached(idx)) {
-        const nearest = findNearestCached(idx);
-        if (nearest >= 0) drawCached(nearest);
-        loadFrame(idx).then(() => {
-          if (!cancelled && getTargetIndex() === idx) drawCached(idx);
-        });
-      }
-      loadFrame(idx - 1);
-      loadFrame(idx + 1);
+	      if (!drawCached(idx)) {
+	        const nearest = findNearestCached(idx);
+	        if (nearest >= 0) drawCached(nearest);
+	        loadFrame(idx, 'high').then(() => {
+	          if (!cancelled && getTargetIndex() === idx) drawCached(idx);
+	        });
+	      }
+	      if (interleavedPreloadStarted) preloadFramesAround(idx);
     };
 
     const scheduleDraw = () => {
@@ -390,7 +512,7 @@ function Hero({ t }) {
     };
 
     if (REDUCE_MOTION) {
-      loadFrame(0).then((image) => {
+      loadFrame(0, 'high').then((image) => {
         if (!cancelled && image) {
           resize();
           drawCached(0);
@@ -405,29 +527,16 @@ function Hero({ t }) {
     window.addEventListener('resize', resize);
 
     resize();
-    loadFrame(0)
+    loadFrame(0, 'high')
       .then((firstFrame) => {
         if (cancelled) return;
         if (firstFrame) drawCached(0);
-        setReady(true);
-        dispatchHeroReady();
-        scheduleDraw();
+	        setReady(true);
+	        dispatchHeroReady();
+	        scheduleDraw();
 
-        KEY_FRAME_INDEXES.forEach(loadFrame);
-        let next = 1;
-        const preloadNext = () => {
-          if (cancelled || next >= FRAME_COUNT) return;
-          loadFrame(next).finally(() => {
-            next += 1;
-            if ('requestIdleCallback' in window) {
-              requestIdleCallback(preloadNext, { timeout: 120 });
-            } else {
-              setTimeout(preloadNext, 16);
-            }
-          });
-        };
-        preloadNext();
-      })
+	        startInterleavedPreload();
+	      })
       .catch(() => {});
 
     return () => {
@@ -435,10 +544,12 @@ function Hero({ t }) {
       window.removeEventListener('scroll', computeTarget);
       window.removeEventListener('resize', resize);
       cancelAnimationFrame(raf);
-      framesRef.current = [];
-      loadedFramesRef.current.clear();
-      loadingFramesRef.current.clear();
-    };
+      framesRef.current.forEach(closeFrame);
+	      framesRef.current = [];
+	      loadedFramesRef.current.clear();
+	      loadingFramesRef.current.clear();
+	      preloadQueue = [];
+	    };
   }, []);
 
   return (
