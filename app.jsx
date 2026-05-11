@@ -217,32 +217,46 @@ function Hero({ t }) {
   const canvasRef = React.useRef(null);
   const sectionRef = React.useRef(null);
   const targetRef = React.useRef(0);
-  const currentRef = React.useRef(0);
+  const framesRef = React.useRef([]);
+  const loadedFramesRef = React.useRef(new Set());
+  const loadingFramesRef = React.useRef(new Map());
   const [ready, setReady] = React.useState(false);
 
   React.useEffect(() => {
     const canvas = canvasRef.current;
     const sec = sectionRef.current;
     if (!canvas || !sec) return;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      setReady(true);
+      window.dispatchEvent(new CustomEvent('galm:hero-ready'));
+      return;
+    }
 
-    let raf;
-    let running = false;
     let cancelled = false;
-    // Sparse array: pre-allocated to FRAMES size, slots are null until extracted.
-    // Non-sequential extraction fills slots out-of-order — findNearestFrame handles gaps.
-    let frames = null;
-    let totalFrames = 0;
-    let vw = 0, vh = 0;
-    let displayVid = null; // fallback display — never seeked during extraction (avoids jank)
-    let extractVid = null; // extraction only — seeked aggressively, never drawn to canvas directly
-    let lastDrawnIdx = -2; // skip redundant GPU draws when frame hasn't changed
+    let raf = 0;
+    let bounds = { top: 0, span: 1, videoEnd: 1 };
+    let lastDrawnIdx = -1;
     let heroReadyDispatched = false;
 
-    const MAX_FRAME_W = 1280;
-    const SCRUB_EASE = 0.075;
-    const FRAME_BASE = 'media/hero-frames/';
-
-    const ctx = canvas.getContext('2d', { alpha: false });
+    const FRAME_COUNT = 361;
+    const FRAME_WIDTH = 1920;
+    const FRAME_HEIGHT = 1080;
+    const FRAME_BASE_PATH = '/media/hero-frames/';
+    const FRAME_EXTENSION = 'webp';
+    const FRAME_PAD = 4;
+    const FRAME_PREFIX = 'frame_';
+    const VIDEO_END_INTO_CURTAIN = 0.8;
+    const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const PRELOAD_STRIDE = 5;
+    const PRELOAD_CONCURRENCY = 8;
+    const PRIORITY_PRELOAD_RADIUS = 16;
+    const PRIORITY_PRELOAD_LIMIT = 10;
+    const preloadQueuedFrames = new Set();
+    let preloadQueue = [];
+    let preloadActive = 0;
+    let preloadScheduled = false;
+    let interleavedPreloadStarted = false;
 
     const dispatchHeroReady = () => {
       if (cancelled || heroReadyDispatched) return;
@@ -250,245 +264,298 @@ function Hero({ t }) {
       window.dispatchEvent(new CustomEvent('galm:hero-ready'));
     };
 
-    // Walk outward from targetIdx to find the nearest already-extracted slot
-    const findNearest = (targetIdx) => {
-      if (!frames) return -1;
-      if (frames[targetIdx] !== null) return targetIdx;
-      for (let d = 1; d < totalFrames; d++) {
-        if (targetIdx - d >= 0 && frames[targetIdx - d] !== null) return targetIdx - d;
-        if (targetIdx + d < totalFrames && frames[targetIdx + d] !== null) return targetIdx + d;
-      }
-      return -1;
-    };
+    const frameSrc = (idx) => (
+      `${FRAME_BASE_PATH}${FRAME_PREFIX}${String(idx + 1).padStart(FRAME_PAD, '0')}.${FRAME_EXTENSION}`
+    );
 
-    const drawFrame = (scrub) => {
-      if (!vw || !vh) return;
-      const cw = canvas.width, ch = canvas.height;
-      const cr = cw / ch, ir = vw / vh;
+    const drawFrameCover = (image) => {
+      const cw = canvas.width;
+      const ch = canvas.height;
+      if (!cw || !ch || !image) return;
+      const cr = cw / ch;
+      const iw = image.naturalWidth || image.width || FRAME_WIDTH;
+      const ih = image.naturalHeight || image.height || FRAME_HEIGHT;
+      const ir = iw / ih;
       let dw, dh, dx, dy;
-      if (ir > cr) { dh = ch; dw = ch * ir; dx = (cw - dw) / 2; dy = 0; }
-      else { dw = cw; dh = cw / ir; dx = 0; dy = (ch - dh) / 2; }
-
-      const targetIdx = totalFrames > 0
-        ? Math.max(0, Math.min(totalFrames - 1, Math.round(scrub * (totalFrames - 1))))
-        : -1;
-
-      const nearest = findNearest(targetIdx);
-      if (nearest >= 0) {
-        if (nearest === lastDrawnIdx) return; // same frame already on canvas — skip
-        ctx.drawImage(frames[nearest], dx, dy, dw, dh);
-        lastDrawnIdx = nearest;
-      } else if (displayVid && displayVid.readyState >= 2) {
-        // No cached frames yet. displayVid stays at time=0 (never seeked during extraction)
-        // so this always shows the first video frame — stable, no jank.
-        lastDrawnIdx = -2;
-        ctx.drawImage(displayVid, dx, dy, dw, dh);
-      }
-    };
-
-    const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      canvas.width = Math.round(window.innerWidth * dpr);
-      canvas.height = Math.round(window.innerHeight * dpr);
-      canvas.style.width = window.innerWidth + 'px';
-      canvas.style.height = window.innerHeight + 'px';
-      lastDrawnIdx = -2;
-      drawFrame(currentRef.current);
-    };
-
-const computeTarget = () => {
-  const rect = sec.getBoundingClientRect();
-  const total = sec.offsetHeight - window.innerHeight;
-  const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
-  const p = total > 0 ? scrolled / total : 0;
-
-  const curtainStart =
-    (sec.offsetHeight - 2 * window.innerHeight) /
-    (sec.offsetHeight - window.innerHeight);
-
-  const VIDEO_END_INTO_CURTAIN = 0.80;
-  const videoEnd = curtainStart + (1 - curtainStart) * VIDEO_END_INTO_CURTAIN;
-
-  targetRef.current = Math.min(1, p / videoEnd);
-
-  if (!running) loop();
-};
-
-    const loop = () => {
-      running = true;
-      const next = currentRef.current + (targetRef.current - currentRef.current) * SCRUB_EASE;
-      currentRef.current = next;
-      drawFrame(next);
-      if (Math.abs(targetRef.current - next) > 0.0005) {
-        raf = requestAnimationFrame(loop);
+      if (ir > cr) {
+        dh = ch;
+        dw = ch * ir;
+        dx = (cw - dw) / 2;
+        dy = 0;
       } else {
-        running = false;
+        dw = cw;
+        dh = cw / ir;
+        dx = 0;
+        dy = (ch - dh) / 2;
+      }
+      ctx.drawImage(image, dx, dy, dw, dh);
+    };
+
+	    const drawCached = (idx) => {
+	      const image = framesRef.current[idx];
+	      if (!image) return false;
+	      drawFrameCover(image);
+	      lastDrawnIdx = idx;
+	      return true;
+	    };
+
+	    const findNearestCached = (idx) => {
+	      if (framesRef.current[idx]) return idx;
+
+	      let bestIdx = -1;
+	      let bestDistance = Infinity;
+	      loadedFramesRef.current.forEach((candidate) => {
+	        const distance = Math.abs(candidate - idx);
+	        if (distance < bestDistance) {
+	          bestIdx = candidate;
+	          bestDistance = distance;
+	        }
+	      });
+
+      return bestIdx;
+    };
+
+    const closeFrame = (image) => {
+      if (image && typeof image.close === 'function') image.close();
+    };
+
+	    const decodeFrameBlob = (blob) => {
+	      if ('createImageBitmap' in window) return createImageBitmap(blob);
+
+	      return new Promise((resolve) => {
+	        const img = new Image();
+	        const url = URL.createObjectURL(blob);
+	        img.decoding = 'async';
+	        img.onload = () => {
+	          URL.revokeObjectURL(url);
+	          resolve(img);
+	        };
+	        img.onerror = () => {
+	          URL.revokeObjectURL(url);
+	          resolve(null);
+	        };
+	        img.src = url;
+	      });
+	    };
+
+    const loadFrame = (idx, priority = 'low') => {
+      if (idx < 0 || idx >= FRAME_COUNT) return Promise.resolve(null);
+      if (framesRef.current[idx]) return Promise.resolve(framesRef.current[idx]);
+      if (loadingFramesRef.current.has(idx)) return loadingFramesRef.current.get(idx);
+
+      const promise = fetch(frameSrc(idx), { cache: 'force-cache', priority })
+        .then((response) => {
+          if (!response.ok) throw new Error('Hero frame load failed');
+          return response.blob();
+        })
+        .then(decodeFrameBlob)
+        .then((image) => {
+          if (!image || cancelled) {
+            closeFrame(image);
+            return null;
+          }
+          framesRef.current[idx] = image;
+          loadedFramesRef.current.add(idx);
+          return image;
+        })
+        .catch(() => null)
+        .finally(() => {
+          loadingFramesRef.current.delete(idx);
+        });
+
+      loadingFramesRef.current.set(idx, promise);
+      return promise;
+    };
+
+    const scheduleIdle = (fn, timeout = 120) => {
+      if ('requestIdleCallback' in window) {
+        requestIdleCallback(fn, { timeout });
+      } else {
+        setTimeout(fn, 16);
       }
     };
 
-    // Yields main thread between extraction steps — pauses during active scroll, resumes on idle
-    const yieldToMain = () => new Promise(resolve => {
-      if (typeof requestIdleCallback !== 'undefined') {
-        requestIdleCallback(resolve, { timeout: 50 });
-      } else {
-        setTimeout(resolve, 0);
-      }
-    });
+    const pumpPreloadQueue = () => {
+      if (cancelled) return;
 
-    const buildOrder = (FRAMES) => {
-      const seen = new Set();
+      while (preloadActive < PRELOAD_CONCURRENCY && preloadQueue.length) {
+        const idx = preloadQueue.shift();
+        if (idx == null || framesRef.current[idx] || loadingFramesRef.current.has(idx)) {
+          continue;
+        }
+
+        preloadActive += 1;
+        loadFrame(idx).finally(() => {
+          preloadActive -= 1;
+          if (preloadQueue.length) schedulePreloadQueue();
+        });
+      }
+    };
+
+    const schedulePreloadQueue = () => {
+      if (preloadScheduled || cancelled) return;
+      preloadScheduled = true;
+
+      const run = () => {
+        preloadScheduled = false;
+        pumpPreloadQueue();
+      };
+
+      scheduleIdle(run, 160);
+    };
+
+    const queuePreloadFrames = (indexes, front = false) => {
+      const next = [];
+
+      indexes.forEach((idx) => {
+        if (idx < 0 || idx >= FRAME_COUNT) return;
+        if (framesRef.current[idx] || loadingFramesRef.current.has(idx)) return;
+        if (preloadQueuedFrames.has(idx)) {
+          if (front) {
+            preloadQueue = preloadQueue.filter((queuedIdx) => queuedIdx !== idx);
+            next.push(idx);
+          }
+          return;
+        }
+        preloadQueuedFrames.add(idx);
+        next.push(idx);
+      });
+
+      preloadQueue = front ? [...next, ...preloadQueue] : [...preloadQueue, ...next];
+      schedulePreloadQueue();
+    };
+
+    const buildInterleavedOrder = () => {
       const order = [];
-      for (const r of [0, 1, 0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875]) {
-        const idx = Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))));
-        if (!seen.has(idx)) { order.push(idx); seen.add(idx); }
-      }
-      for (let i = 0; i < FRAMES; i++) {
-        if (!seen.has(i)) order.push(i);
+      for (let offset = 0; offset < PRELOAD_STRIDE; offset += 1) {
+        for (let idx = offset; idx < FRAME_COUNT; idx += PRELOAD_STRIDE) {
+          order.push(idx);
+        }
       }
       return order;
     };
 
-    const criticalFrameIndexes = (FRAMES) => (
-      [0, 0.25, 0.5, 0.75, 1].map((r) =>
-        Math.max(0, Math.min(FRAMES - 1, Math.round(r * (FRAMES - 1))))
-      )
-    );
+    const preloadFramesAround = (idx) => {
+      const wanted = [idx];
 
-    const criticalFramesReady = (FRAMES) => (
-      criticalFrameIndexes(FRAMES).every((idx) => frames && frames[idx])
-    );
-
-    const loadManifestFrame = async (fileNames, frameIdx) => {
-      const response = await fetch(FRAME_BASE + fileNames[frameIdx]);
-      if (!response.ok) throw new Error(`frame ${frameIdx} failed`);
-      const blob = await response.blob();
-      if (cancelled) return null;
-      return createImageBitmap(blob);
-    };
-
-    const loadFromManifest = async (manifest) => {
-      const fileNames = manifest.frames;
-      const FRAMES = fileNames.length;
-      if (FRAMES < 2) return;
-      totalFrames = FRAMES;
-      if (!frames || frames.length !== FRAMES) frames = new Array(FRAMES).fill(null);
-      for (const frameIdx of buildOrder(FRAMES)) {
-        if (cancelled) return;
-        if (frames[frameIdx]) continue;
-        try {
-          const bitmap = await loadManifestFrame(fileNames, frameIdx);
-          if (cancelled) return;
-          frames[frameIdx] = bitmap;
-          if (criticalFramesReady(FRAMES)) dispatchHeroReady();
-        } catch (_) {}
-        await yieldToMain();
+      for (let d = 1; d <= PRIORITY_PRELOAD_RADIUS && wanted.length < PRIORITY_PRELOAD_LIMIT; d += 1) {
+        if (idx + d < FRAME_COUNT) wanted.push(idx + d);
+        if (idx - d >= 0 && wanted.length < PRIORITY_PRELOAD_LIMIT) wanted.push(idx - d);
       }
+
+      queuePreloadFrames(wanted, true);
     };
 
-    const loadFromVideo = async (dur) => {
-      extractVid = document.createElement('video');
-      extractVid.muted = true; extractVid.playsInline = true; extractVid.preload = 'auto';
-      extractVid.src = 'media/hero.mp4';
-      await new Promise((resolve, reject) => {
-        if (extractVid.readyState >= 1) { resolve(); return; }
-        extractVid.addEventListener('loadedmetadata', resolve, { once: true });
-        extractVid.addEventListener('error', reject, { once: true });
-      });
+    const startInterleavedPreload = () => {
+      if (interleavedPreloadStarted) return;
+      interleavedPreloadStarted = true;
+      queuePreloadFrames(buildInterleavedOrder());
+    };
+
+    const getTargetIndex = () => {
+      return Math.max(0, Math.min(
+        FRAME_COUNT - 1,
+        Math.round(targetRef.current * (FRAME_COUNT - 1))
+      ));
+    };
+
+    const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+
+      const rect = sec.getBoundingClientRect();
+      const pageY = window.scrollY || window.pageYOffset || 0;
+      const sectionHeight = sec.offsetHeight;
+      const viewportHeight = window.innerHeight || 1;
+      const span = Math.max(sectionHeight - viewportHeight, 1);
+      const curtainStart = Math.max(0, Math.min(1, (sectionHeight - 2 * viewportHeight) / span));
+
+      bounds = {
+        top: rect.top + pageY,
+        span,
+        videoEnd: curtainStart + (1 - curtainStart) * VIDEO_END_INTO_CURTAIN,
+      };
+
+      computeTarget();
+      if (lastDrawnIdx >= 0) drawCached(lastDrawnIdx);
+    };
+
+    const flushDraw = () => {
+      raf = 0;
       if (cancelled) return;
-      const FRAMES = Math.min(60, Math.max(20, Math.round(dur * 24)));
-      totalFrames = FRAMES;
-      frames = new Array(FRAMES).fill(null);
-      const scale = Math.min(1, MAX_FRAME_W / vw);
-      const fw = Math.round(vw * scale), fh = Math.round(vh * scale);
-      for (const frameIdx of buildOrder(FRAMES)) {
-        if (cancelled) return;
-        const tt = (frameIdx / (FRAMES - 1)) * dur;
-        await new Promise(resolve => {
-          const onSeeked = () => { extractVid.removeEventListener('seeked', onSeeked); resolve(); };
-          extractVid.addEventListener('seeked', onSeeked);
-          try { extractVid.currentTime = Math.min(tt, dur - 0.001); }
-          catch (e) { resolve(); }
-        });
-        if (cancelled) return;
-        const c = document.createElement('canvas');
-        c.width = fw; c.height = fh;
-        c.getContext('2d').drawImage(extractVid, 0, 0, fw, fh);
-        frames[frameIdx] = c;
-        await yieldToMain();
-      }
-      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
+
+      const idx = getTargetIndex();
+      if (idx === lastDrawnIdx) return;
+	      if (!drawCached(idx)) {
+	        const nearest = findNearestCached(idx);
+	        if (nearest >= 0) drawCached(nearest);
+	        loadFrame(idx, 'high').then(() => {
+	          if (!cancelled && getTargetIndex() === idx) drawCached(idx);
+	        });
+	      }
+	      if (interleavedPreloadStarted) preloadFramesAround(idx);
     };
 
-    const preload = async () => {
-      try {
-        let manifest = null;
-        await fetch('media/hero-frames/manifest.json')
-          .then(r => r.ok ? r.json() : null)
-          .then(m => { manifest = m; })
-          .catch(() => {});
-        if (cancelled) return;
+    const scheduleDraw = () => {
+      if (!raf) raf = requestAnimationFrame(flushDraw);
+    };
 
-        if (manifest && Array.isArray(manifest.frames) && manifest.frames.length >= 2) {
-          totalFrames = manifest.frames.length;
-          frames = new Array(totalFrames).fill(null);
-          let firstFrame = null;
-          try {
-            firstFrame = await loadManifestFrame(manifest.frames, 0);
-          } catch (_) {}
-          if (cancelled) return;
-          if (firstFrame) {
-            frames[0] = firstFrame;
-            vw = manifest.width || firstFrame.width;
-            vh = manifest.height || firstFrame.height;
-            setReady(true);
-            resize();
-            drawFrame(0);
-            computeTarget();
-            if (criticalFramesReady(totalFrames)) dispatchHeroReady();
-            await loadFromManifest(manifest);
-            return;
-          }
+    const computeTarget = () => {
+      const pageY = window.scrollY || window.pageYOffset || 0;
+      const scrolled = Math.min(Math.max(pageY - bounds.top, 0), bounds.span);
+      const progress = bounds.span > 0 ? scrolled / bounds.span : 0;
+      targetRef.current = Math.min(1, progress / Math.max(bounds.videoEnd, 0.001));
+      scheduleDraw();
+    };
+
+    if (REDUCE_MOTION) {
+      loadFrame(0, 'high').then((image) => {
+        if (!cancelled && image) {
+          resize();
+          drawCached(0);
         }
-
-        displayVid = document.createElement('video');
-        displayVid.muted = true; displayVid.playsInline = true; displayVid.preload = 'auto';
-        displayVid.src = 'media/hero.mp4';
-        await new Promise((resolve, reject) => {
-          if (displayVid.readyState >= 1) { resolve(); return; }
-          displayVid.addEventListener('loadedmetadata', resolve, { once: true });
-          displayVid.addEventListener('error', reject, { once: true });
-        });
-        if (cancelled) return;
-        vw = displayVid.videoWidth;
-        vh = displayVid.videoHeight;
         setReady(true);
-        resize();
-        computeTarget();
         dispatchHeroReady();
-        await loadFromVideo(displayVid.duration || 1);
-      } catch (e) {
-        console.warn('hero preload failed', e);
-      }
-    };
+      });
+      return () => { cancelled = true; };
+    }
 
-    preload();
     window.addEventListener('scroll', computeTarget, { passive: true });
     window.addEventListener('resize', resize);
+
+    resize();
+    loadFrame(0, 'high')
+      .then((firstFrame) => {
+        if (cancelled) return;
+        if (firstFrame) drawCached(0);
+	        setReady(true);
+	        dispatchHeroReady();
+	        scheduleDraw();
+
+	        startInterleavedPreload();
+	      })
+      .catch(() => {});
 
     return () => {
       cancelled = true;
       window.removeEventListener('scroll', computeTarget);
       window.removeEventListener('resize', resize);
       cancelAnimationFrame(raf);
-      if (displayVid) { try { displayVid.src = ''; } catch (_) {} displayVid = null; }
-      if (extractVid) { try { extractVid.src = ''; } catch (_) {} extractVid = null; }
-    };
+      framesRef.current.forEach(closeFrame);
+	      framesRef.current = [];
+	      loadedFramesRef.current.clear();
+	      loadingFramesRef.current.clear();
+	      preloadQueue = [];
+	    };
   }, []);
 
   return (
     <section className="hero" id="top" data-screen-label="01 Hero" ref={sectionRef}>
       <div className="hero-video-wrap" aria-hidden="true">
-        <canvas ref={canvasRef} className="hero-video"></canvas>
+        <canvas ref={canvasRef} className="hero-canvas" aria-hidden="true"></canvas>
         {!ready && (
           <div className="hero-loading">
             <span>LOADING…</span>

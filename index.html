@@ -24,23 +24,78 @@
 
     if (reduceMotion || isTouch || !window.Lenis) return;
 
-    const lenis = new Lenis({
-      duration: 1.55,
-      easing: (t) => Math.min(1, 1.001 - Math.pow(2, -10 * t)),
-      smoothWheel: true,
-      wheelMultiplier: 0.72,
-      touchMultiplier: 1,
-      infinite: false,
-    });
+    let lenis = null;
+    let rafId = 0;
 
-    window.__GALM_LENIS__ = lenis;
+    const getScrubBounds = () => {
+      const hero = document.querySelector('.hero');
+      if (!hero) return null;
+
+      const rect = hero.getBoundingClientRect();
+      const scrollY = window.scrollY || window.pageYOffset || 0;
+      const height = hero.offsetHeight;
+      const vh = window.innerHeight || 1;
+      const span = Math.max(height - vh, 1);
+      const curtainStart = Math.max(0, Math.min(1, (height - 2 * vh) / span));
+      const videoEnd = curtainStart + (1 - curtainStart);
+
+      return {
+        start: rect.top + scrollY,
+        end: rect.top + scrollY + span * videoEnd,
+      };
+    };
+
+    const isInScrub = () => {
+      const bounds = getScrubBounds();
+      if (!bounds) return false;
+      const y = window.scrollY || window.pageYOffset || 0;
+      return y >= bounds.start && y <= bounds.end;
+    };
+
+    const destroyLenis = () => {
+      if (!lenis) return;
+      lenis.destroy();
+      lenis = null;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = 0;
+      window.__GALM_LENIS__ = null;
+    };
+
+    const ensureLenis = () => {
+      if (lenis) return;
+      lenis = new Lenis({
+        duration: 0.85,
+        easing: (t) => 1 - Math.pow(1 - t, 3),
+        smoothWheel: true,
+        wheelMultiplier: 1.18,
+        touchMultiplier: 1,
+        infinite: false,
+      });
+      window.__GALM_LENIS__ = lenis;
+      if (!rafId) rafId = requestAnimationFrame(raf);
+    };
+
+    const syncLenisState = () => {
+      if (isInScrub()) ensureLenis();
+      else destroyLenis();
+    };
 
     function raf(time) {
+      if (!lenis) {
+        rafId = 0;
+        return;
+      }
+      if (!isInScrub()) {
+        destroyLenis();
+        return;
+      }
       lenis.raf(time);
-      requestAnimationFrame(raf);
+      rafId = requestAnimationFrame(raf);
     }
 
-    requestAnimationFrame(raf);
+    window.addEventListener('scroll', syncLenisState, { passive: true });
+    window.addEventListener('resize', syncLenisState);
+    syncLenisState();
 
     document.querySelectorAll('a[href^="#"]').forEach((a) => {
       a.addEventListener('click', (e) => {
@@ -49,10 +104,11 @@
         const target = document.querySelector(href);
         if (!target) return;
         e.preventDefault();
-        lenis.scrollTo(target, {
-          offset: 0,
-          duration: 1.2,
-        });
+        if (lenis) {
+          lenis.scrollTo(target, { offset: 0, duration: 0.8 });
+        } else {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
       });
     });
   });
