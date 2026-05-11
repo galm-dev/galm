@@ -246,7 +246,7 @@ function Hero({ t }) {
     const FRAME_EXTENSION = 'webp';
     const FRAME_PAD = 4;
     const FRAME_PREFIX = 'frame_';
-    const VIDEO_END_INTO_CURTAIN = 1.08;
+    const VIDEO_END_INTO_CURTAIN = 0.8;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const PRELOAD_STRIDE = 5;
     const PRELOAD_CONCURRENCY = 8;
