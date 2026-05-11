@@ -1,0 +1,1 @@
+Code style: JSX in app.jsx with function components and React hooks destructured from React. Plain CSS in styles.css. Keep edits small and compatible with static HTML/Babel runtime. Language content lives in i18n.js under window.GALM_I18N.

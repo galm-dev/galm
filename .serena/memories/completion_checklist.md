@@ -1,0 +1,1 @@
+After changes: inspect git diff, run lightweight syntax checks where possible, and manually/browser-test static site via python3 -m http.server when UI behavior matters. No npm lint/test scripts exist.

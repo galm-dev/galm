@@ -1,0 +1,1 @@
+Static GALM landing page. Root files: index.html, app.jsx, i18n.js, styles.css, tweaks-panel.jsx, wrangler.toml, media/images/uploads. React 18 UMD + Babel loaded from CDN; no package.json in repo root. App renders navigation, hero, products, manifesto, footer, tweaks panel.
