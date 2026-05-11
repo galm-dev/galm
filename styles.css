@@ -280,19 +280,39 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 /* Lang toggle */
 .lang {
   display: inline-flex;
+  position: relative;
   border: 1px solid var(--line-2);
   border-radius: 999px;
   padding: 2px;
   font-family: var(--mono);
   font-size: 11px;
+  cursor: pointer;
+  touch-action: pan-y;
+  user-select: none;
+}
+.lang-thumb {
+  position: absolute;
+  inset: 2px auto 2px 2px;
+  width: calc((100% - 4px) / 2);
+  border-radius: 999px;
+  background: var(--fg);
+  pointer-events: none;
+  transition: transform .18s ease;
+}
+.lang.is-pt .lang-thumb {
+  transform: translateX(100%);
 }
 .lang button {
+  position: relative;
+  z-index: 1;
+  min-width: 34px;
   padding: 4px 10px;
   border-radius: 999px;
+  background: transparent;
   color: var(--fg-2);
   letter-spacing: .04em;
 }
-.lang button.on { background: var(--fg); color: var(--bg); }
+.lang button.on { color: var(--bg); }
 
 /* Hero */
 .hero {

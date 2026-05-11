@@ -111,10 +111,110 @@ function Logo() {
 
 // ─── Lang toggle ───
 function Lang({ lang, setLang }) {
+  const trackRef = useRef(null);
+  const dragStartRef = useRef(null);
+  const suppressClickRef = useRef(false);
+  const [previewLang, setPreviewLang] = useState(lang);
+
+  useEffect(() => {
+    if (!dragStartRef.current) setPreviewLang(lang);
+  }, [lang]);
+
+  const langFromPointer = (clientX) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return lang;
+    return clientX < rect.left + rect.width / 2 ? 'en' : 'pt';
+  };
+
+  const updateFromPointer = (event, commit = false) => {
+    const next = langFromPointer(event.clientX);
+    setPreviewLang(next);
+    if (commit) setLang(next);
+  };
+
+  const finishPointer = (event) => {
+    dragStartRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 0);
+  };
+
+  const onPointerDown = (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    dragStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      dragged: false,
+      startedOnTrack: event.target === event.currentTarget,
+    };
+    suppressClickRef.current = false;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    updateFromPointer(event);
+  };
+
+  const onPointerMove = (event) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    if (Math.abs(event.clientX - start.x) > 3 || Math.abs(event.clientY - start.y) > 3) {
+      start.dragged = true;
+      suppressClickRef.current = true;
+    }
+    updateFromPointer(event);
+  };
+
+  const onPointerUp = (event) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    if (start.dragged || start.startedOnTrack) updateFromPointer(event, true);
+    finishPointer(event);
+  };
+
+  const onPointerCancel = (event) => {
+    if (!dragStartRef.current) return;
+    setPreviewLang(lang);
+    finishPointer(event);
+  };
+
+  const chooseLang = (next) => {
+    setPreviewLang(next);
+    setLang(next);
+  };
+
+  const onClickCapture = (event) => {
+    if (!suppressClickRef.current) return;
+    suppressClickRef.current = false;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
   return (
-    <div className="lang">
-      <button className={lang === 'en' ? 'on' : ''} onClick={() => setLang('en')}>EN</button>
-      <button className={lang === 'pt' ? 'on' : ''} onClick={() => setLang('pt')}>PT</button>
+    <div
+      ref={trackRef}
+      className={`lang ${previewLang === 'pt' ? 'is-pt' : 'is-en'}`}
+      role="radiogroup"
+      aria-label="Language"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerCancel}
+      onClickCapture={onClickCapture}
+    >
+      <span className="lang-thumb" aria-hidden="true" />
+      <button
+        type="button"
+        role="radio"
+        aria-checked={lang === 'en'}
+        className={previewLang === 'en' ? 'on' : ''}
+        onClick={() => chooseLang('en')}
+      >EN</button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={lang === 'pt'}
+        className={previewLang === 'pt' ? 'on' : ''}
+        onClick={() => chooseLang('pt')}
+      >PT</button>
     </div>
   );
 }
