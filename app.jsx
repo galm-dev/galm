@@ -214,30 +214,42 @@ function SiteIntro() {
 
 // ─── Hero ───
 function Hero({ t }) {
-  const videoRef = React.useRef(null);
+  const canvasRef = React.useRef(null);
   const sectionRef = React.useRef(null);
   const targetRef = React.useRef(0);
   const currentRef = React.useRef(0);
+  const framesRef = React.useRef([]);
+  const loadedFramesRef = React.useRef(new Set());
+  const loadingFramesRef = React.useRef(new Set());
   const [ready, setReady] = React.useState(false);
 
   React.useEffect(() => {
-    const video = videoRef.current;
+    const canvas = canvasRef.current;
     const sec = sectionRef.current;
-    if (!video || !sec) return;
+    if (!canvas || !sec) return;
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) {
+      setReady(true);
+      window.dispatchEvent(new CustomEvent('galm:hero-ready'));
+      return;
+    }
 
     let cancelled = false;
     let raf = 0;
     let bounds = { top: 0, span: 1, videoEnd: 1 };
+    let lastDrawnIdx = -1;
     let heroReadyDispatched = false;
-    let seeking = false;
-    let pendingTime = null;
-    let lastAppliedFrame = -1;
-    let seekTimeout = 0;
 
-    const SCRUB_FPS = 18;
-    const SEEK_EPSILON = 1 / 30;
-    const VIDEO_END_INTO_CURTAIN = 1;
+    const FRAME_COUNT = 361;
+    const FRAME_BASE_PATH = 'media/hero-frames/';
+    const FRAME_EXTENSION = 'webp';
+    const FRAME_PAD = 4;
+    const FRAME_PREFIX = 'frame_';
+    const VIDEO_END_INTO_CURTAIN = 1.08;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const KEY_FRAME_INDEXES = [0, 0.25, 0.5, 0.75, 1].map((ratio) =>
+      Math.max(0, Math.min(FRAME_COUNT - 1, Math.round(ratio * (FRAME_COUNT - 1))))
+    );
 
     const dispatchHeroReady = () => {
       if (cancelled || heroReadyDispatched) return;
@@ -245,7 +257,91 @@ function Hero({ t }) {
       window.dispatchEvent(new CustomEvent('galm:hero-ready'));
     };
 
+    const frameSrc = (idx) => (
+      `${FRAME_BASE_PATH}${FRAME_PREFIX}${String(idx + 1).padStart(FRAME_PAD, '0')}.${FRAME_EXTENSION}`
+    );
+
+    const drawCover = (image) => {
+      const cw = canvas.width;
+      const ch = canvas.height;
+      if (!cw || !ch || !image) return;
+      const cr = cw / ch;
+      const iw = image.naturalWidth || 1920;
+      const ih = image.naturalHeight || 1080;
+      const ir = iw / ih;
+      let dw, dh, dx, dy;
+      if (ir > cr) {
+        dh = ch;
+        dw = ch * ir;
+        dx = (cw - dw) / 2;
+        dy = 0;
+      } else {
+        dw = cw;
+        dh = cw / ir;
+        dx = 0;
+        dy = (ch - dh) / 2;
+      }
+      ctx.drawImage(image, dx, dy, dw, dh);
+    };
+
+    const drawCached = (idx) => {
+      const image = framesRef.current[idx];
+      if (!image) return false;
+      drawCover(image);
+      lastDrawnIdx = idx;
+      return true;
+    };
+
+    const findNearestCached = (idx) => {
+      if (framesRef.current[idx]) return idx;
+      for (let d = 1; d < FRAME_COUNT; d++) {
+        if (idx - d >= 0 && framesRef.current[idx - d]) return idx - d;
+        if (idx + d < FRAME_COUNT && framesRef.current[idx + d]) return idx + d;
+      }
+      return -1;
+    };
+
+    const loadFrame = (idx) => {
+      if (idx < 0 || idx >= FRAME_COUNT) return Promise.resolve(null);
+      if (framesRef.current[idx]) return Promise.resolve(framesRef.current[idx]);
+      if (loadingFramesRef.current.has(idx)) return Promise.resolve(null);
+
+      loadingFramesRef.current.add(idx);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.decoding = 'async';
+        img.onload = () => {
+          loadingFramesRef.current.delete(idx);
+          if (cancelled) {
+            resolve(null);
+            return;
+          }
+          framesRef.current[idx] = img;
+          loadedFramesRef.current.add(idx);
+          resolve(img);
+        };
+        img.onerror = () => {
+          loadingFramesRef.current.delete(idx);
+          resolve(null);
+        };
+        img.src = frameSrc(idx);
+      });
+    };
+
+    const getTargetIndex = () => {
+      return Math.max(0, Math.min(
+        FRAME_COUNT - 1,
+        Math.round(targetRef.current * (FRAME_COUNT - 1))
+      ));
+    };
+
     const resize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+
       const rect = sec.getBoundingClientRect();
       const pageY = window.scrollY || window.pageYOffset || 0;
       const sectionHeight = sec.offsetHeight;
@@ -260,47 +356,29 @@ function Hero({ t }) {
       };
 
       computeTarget();
+      if (lastDrawnIdx >= 0) drawCached(lastDrawnIdx);
     };
 
-    const quantizeTime = (time) => Math.round(time * SCRUB_FPS) / SCRUB_FPS;
-
-    const applySeek = (time) => {
-      if (cancelled || !Number.isFinite(video.duration) || video.duration <= 0) return;
-
-      const clamped = Math.max(0, Math.min(video.duration, time));
-      const quantized = quantizeTime(clamped);
-      const frame = Math.round(quantized * SCRUB_FPS);
-
-      pendingTime = quantized;
-      if (seeking) return;
-      if (frame === lastAppliedFrame || Math.abs(video.currentTime - quantized) < SEEK_EPSILON) {
-        pendingTime = null;
-        lastAppliedFrame = frame;
-        return;
-      }
-
-      pendingTime = null;
-      seeking = true;
-      lastAppliedFrame = frame;
-      clearTimeout(seekTimeout);
-      seekTimeout = setTimeout(onSeeked, 350);
-      try {
-        video.currentTime = quantized;
-      } catch (_) {
-        seeking = false;
-        lastAppliedFrame = -1;
-      }
-    };
-
-    const flushSeek = () => {
+    const flushDraw = () => {
       raf = 0;
-      if (cancelled || REDUCE_MOTION || video.readyState < 1) return;
+      if (cancelled) return;
       currentRef.current = targetRef.current;
-      applySeek(targetRef.current * video.duration);
+
+      const idx = getTargetIndex();
+      if (idx === lastDrawnIdx) return;
+      if (!drawCached(idx)) {
+        const nearest = findNearestCached(idx);
+        if (nearest >= 0) drawCached(nearest);
+        loadFrame(idx).then(() => {
+          if (!cancelled && getTargetIndex() === idx) drawCached(idx);
+        });
+      }
+      loadFrame(idx - 1);
+      loadFrame(idx + 1);
     };
 
-    const scheduleSeek = () => {
-      if (!raf) raf = requestAnimationFrame(flushSeek);
+    const scheduleDraw = () => {
+      if (!raf) raf = requestAnimationFrame(flushDraw);
     };
 
     const computeTarget = () => {
@@ -308,82 +386,65 @@ function Hero({ t }) {
       const scrolled = Math.min(Math.max(pageY - bounds.top, 0), bounds.span);
       const progress = bounds.span > 0 ? scrolled / bounds.span : 0;
       targetRef.current = Math.min(1, progress / Math.max(bounds.videoEnd, 0.001));
-      scheduleSeek();
-    };
-
-    const onSeeked = () => {
-      clearTimeout(seekTimeout);
-      seeking = false;
-      if (pendingTime !== null) {
-        const next = pendingTime;
-        pendingTime = null;
-        applySeek(next);
-      }
-    };
-
-    const onLoadedMetadata = () => {
-      if (cancelled) return;
-      video.pause();
-      setReady(true);
-      resize();
-      scheduleSeek();
-      dispatchHeroReady();
-    };
-
-    const onLoadedData = () => {
-      if (cancelled) return;
-      video.removeAttribute('poster');
-      scheduleSeek();
-    };
-
-    const startLoad = () => {
-      if (cancelled || video.dataset.loaded === 'true') return;
-      video.dataset.loaded = 'true';
-      video.preload = 'auto';
-      video.src = 'media/hero-scrub.mp4';
-      video.load();
+      scheduleDraw();
     };
 
     if (REDUCE_MOTION) {
-      setReady(true);
-      dispatchHeroReady();
+      loadFrame(0).then((image) => {
+        if (!cancelled && image) {
+          resize();
+          drawCached(0);
+        }
+        setReady(true);
+        dispatchHeroReady();
+      });
       return () => { cancelled = true; };
     }
 
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('loadeddata', onLoadedData);
-    video.addEventListener('seeked', onSeeked);
     window.addEventListener('scroll', computeTarget, { passive: true });
     window.addEventListener('resize', resize);
 
-    startLoad();
     resize();
+    loadFrame(0)
+      .then((firstFrame) => {
+        if (cancelled) return;
+        if (firstFrame) drawCached(0);
+        setReady(true);
+        dispatchHeroReady();
+        scheduleDraw();
+
+        KEY_FRAME_INDEXES.forEach(loadFrame);
+        let next = 1;
+        const preloadNext = () => {
+          if (cancelled || next >= FRAME_COUNT) return;
+          loadFrame(next).finally(() => {
+            next += 1;
+            if ('requestIdleCallback' in window) {
+              requestIdleCallback(preloadNext, { timeout: 120 });
+            } else {
+              setTimeout(preloadNext, 16);
+            }
+          });
+        };
+        preloadNext();
+      })
+      .catch(() => {});
 
     return () => {
       cancelled = true;
       window.removeEventListener('scroll', computeTarget);
       window.removeEventListener('resize', resize);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('loadeddata', onLoadedData);
-      video.removeEventListener('seeked', onSeeked);
       cancelAnimationFrame(raf);
-      clearTimeout(seekTimeout);
-      video.removeAttribute('src');
-      video.load();
+      framesRef.current = [];
+      loadedFramesRef.current.clear();
+      loadingFramesRef.current.clear();
     };
   }, []);
 
   return (
     <section className="hero" id="top" data-screen-label="01 Hero" ref={sectionRef}>
       <div className="hero-video-wrap" aria-hidden="true">
-        <video
-          ref={videoRef}
-          className="hero-video"
-          poster="media/hero-poster.png"
-          muted
-          playsInline
-          preload="metadata"
-        />
+        <canvas ref={canvasRef} className="hero-canvas" aria-hidden="true"></canvas>
         {!ready && (
           <div className="hero-loading">
             <span>LOADING…</span>

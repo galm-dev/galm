@@ -8,11 +8,11 @@ const WIDTH = 1920;
 execFileSync('ffmpeg', [
   '-i', SRC,
   '-an',
-  '-vf', `fps=18,scale=${WIDTH}:-2:flags=lanczos`,
+  '-vf', `scale=${WIDTH}:-2:flags=lanczos,fps=24`,
   '-c:v', 'libx264',
   '-profile:v', 'high',
   '-pix_fmt', 'yuv420p',
-  '-preset', 'medium',
+  '-preset', 'veryfast',
   '-crf', '23',
   '-g', '6',
   '-keyint_min', '6',
