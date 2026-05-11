@@ -232,13 +232,12 @@ function Hero({ t }) {
     let seeking = false;
     let pendingTime = null;
     let lastAppliedFrame = -1;
+    let seekTimeout = 0;
 
     const SCRUB_FPS = 18;
     const SEEK_EPSILON = 1 / 30;
     const VIDEO_END_INTO_CURTAIN = 1;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const CONNECTION = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
-    const SAVE_DATA = Boolean(CONNECTION && CONNECTION.saveData);
 
     const dispatchHeroReady = () => {
       if (cancelled || heroReadyDispatched) return;
@@ -274,15 +273,23 @@ function Hero({ t }) {
 
       pendingTime = quantized;
       if (seeking) return;
-      if (frame === lastAppliedFrame && Math.abs(video.currentTime - quantized) < SEEK_EPSILON) {
+      if (frame === lastAppliedFrame || Math.abs(video.currentTime - quantized) < SEEK_EPSILON) {
         pendingTime = null;
+        lastAppliedFrame = frame;
         return;
       }
 
       pendingTime = null;
       seeking = true;
       lastAppliedFrame = frame;
-      video.currentTime = quantized;
+      clearTimeout(seekTimeout);
+      seekTimeout = setTimeout(onSeeked, 350);
+      try {
+        video.currentTime = quantized;
+      } catch (_) {
+        seeking = false;
+        lastAppliedFrame = -1;
+      }
     };
 
     const flushSeek = () => {
@@ -305,6 +312,7 @@ function Hero({ t }) {
     };
 
     const onSeeked = () => {
+      clearTimeout(seekTimeout);
       seeking = false;
       if (pendingTime !== null) {
         const next = pendingTime;
@@ -322,6 +330,12 @@ function Hero({ t }) {
       dispatchHeroReady();
     };
 
+    const onLoadedData = () => {
+      if (cancelled) return;
+      video.removeAttribute('poster');
+      scheduleSeek();
+    };
+
     const startLoad = () => {
       if (cancelled || video.dataset.loaded === 'true') return;
       video.dataset.loaded = 'true';
@@ -330,39 +344,30 @@ function Hero({ t }) {
       video.load();
     };
 
-    if (REDUCE_MOTION || SAVE_DATA) {
+    if (REDUCE_MOTION) {
       setReady(true);
       dispatchHeroReady();
       return () => { cancelled = true; };
     }
 
     video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('loadeddata', onLoadedData);
     video.addEventListener('seeked', onSeeked);
     window.addEventListener('scroll', computeTarget, { passive: true });
     window.addEventListener('resize', resize);
 
-    let observer = null;
-    if ('IntersectionObserver' in window) {
-      observer = new IntersectionObserver((entries) => {
-        if (entries.some(entry => entry.isIntersecting)) {
-          startLoad();
-          observer.disconnect();
-        }
-      }, { rootMargin: '800px 0px' });
-      observer.observe(sec);
-    } else {
-      startLoad();
-    }
+    startLoad();
     resize();
 
     return () => {
       cancelled = true;
-      if (observer) observer.disconnect();
       window.removeEventListener('scroll', computeTarget);
       window.removeEventListener('resize', resize);
       video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('loadeddata', onLoadedData);
       video.removeEventListener('seeked', onSeeked);
       cancelAnimationFrame(raf);
+      clearTimeout(seekTimeout);
       video.removeAttribute('src');
       video.load();
     };
