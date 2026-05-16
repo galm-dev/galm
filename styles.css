@@ -1042,8 +1042,13 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   .logo-word { font-size: 22px; }
 }
 
+/* Touch / reduced-motion devices use the static hero (see app.jsx STATIC_HERO),
+   so collapse the long scrub scroll into a brief, snappy reveal. */
+@media (pointer: coarse), (prefers-reduced-motion: reduce) {
+  :root { --hero-scroll-height: 180vh; }
+}
+
 @media (max-width: 600px) {
-  :root { --hero-scroll-height: 320vh; }
   .container { padding: 0 20px; }
 
   /* Hero */

@@ -426,6 +426,16 @@ function Hero({ t }) {
     const FRAME_PREFIX = 'frame_';
     const VIDEO_END_INTO_CURTAIN = 0.8;
     const REDUCE_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const COARSE_POINTER = window.matchMedia('(pointer: coarse)').matches;
+    const SMALL_SCREEN = window.matchMedia('(max-width: 720px)').matches;
+    const LOW_MEMORY = typeof navigator !== 'undefined'
+      && typeof navigator.deviceMemory === 'number'
+      && navigator.deviceMemory > 0
+      && navigator.deviceMemory <= 4;
+    // The 361 full-HD frames decode to ~3GB of bitmaps held in memory — fine on
+    // desktop, but it OOMs phones (the tab/device freezes). On touch / small /
+    // low-memory devices, skip the scrub entirely and show one static frame.
+    const STATIC_HERO = REDUCE_MOTION || COARSE_POINTER || SMALL_SCREEN || LOW_MEMORY;
     const PRELOAD_STRIDE = 5;
     const PRELOAD_CONCURRENCY = 8;
     const PRIORITY_PRELOAD_RADIUS = 16;
@@ -689,16 +699,27 @@ function Hero({ t }) {
       scheduleDraw();
     };
 
-    if (REDUCE_MOTION) {
+    if (STATIC_HERO) {
+      const redrawStatic = () => {
+        resize();
+        drawCached(0);
+      };
       loadFrame(0, 'high').then((image) => {
-        if (!cancelled && image) {
-          resize();
-          drawCached(0);
-        }
+        if (!cancelled && image) redrawStatic();
         setReady(true);
         dispatchHeroReady();
       });
-      return () => { cancelled = true; };
+      window.addEventListener('resize', redrawStatic);
+      window.addEventListener('orientationchange', redrawStatic);
+      return () => {
+        cancelled = true;
+        window.removeEventListener('resize', redrawStatic);
+        window.removeEventListener('orientationchange', redrawStatic);
+        framesRef.current.forEach(closeFrame);
+        framesRef.current = [];
+        loadedFramesRef.current.clear();
+        loadingFramesRef.current.clear();
+      };
     }
 
     window.addEventListener('scroll', computeTarget, { passive: true });
