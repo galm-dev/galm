@@ -219,6 +219,25 @@ function Lang({ lang, setLang }) {
   );
 }
 
+// ─── Media query hook (with Safari < 14 addListener fallback) ───
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => {
+    try { return window.matchMedia(query).matches; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    onChange();
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else mq.addListener(onChange); // Safari < 14, older browsers
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else mq.removeListener(onChange);
+    };
+  }, [query]);
+  return matches;
+}
+
 // ─── Nav ───
 function Nav({ lang, setLang, t, menuOpen, setMenuOpen }) {
   return (
@@ -247,41 +266,80 @@ function Nav({ lang, setLang, t, menuOpen, setMenuOpen }) {
 }
 
 // ─── Mobile menu ───
+// Mounted only at mobile widths (see App), so its effects never run on desktop
+// and the overlay markup isn't duplicated into every page.
 function MobileMenu({ open, onClose, t }) {
+  const dialogRef = useRef(null);
+  const restoreFocusRef = useRef(null);
+
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (!open) return undefined;
+
+    // Remember what had focus so we can restore it on close (the burger,
+    // typically), then move focus into the dialog.
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
+    // Class-based lock composes cleanly with intro-lock and any other locker
+    // instead of clobbering an inline body.style.overflow on cleanup.
+    document.body.classList.add('menu-lock');
+
+    const node = dialogRef.current;
+    const focusable = () =>
+      node ? Array.from(node.querySelectorAll('a[href], button:not([disabled])')) : [];
+
+    // The overlay transitions from visibility:hidden, so focusing synchronously
+    // here is a no-op (focus stays on the burger). Defer past the style flush.
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const items = focusable();
+        (items[0] || node)?.focus();
+      });
+    });
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key !== 'Tab') return;
+      const f = focusable();
+      if (f.length === 0) { e.preventDefault(); return; }
+      const first = f[0];
+      const last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+
     return () => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prev;
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+      document.removeEventListener('keydown', onKey);
+      document.body.classList.remove('menu-lock');
+      const toRestore = restoreFocusRef.current;
+      if (toRestore && document.contains(toRestore)) toRestore.focus();
     };
   }, [open, onClose]);
 
-  useEffect(() => {
-    const mq = window.matchMedia('(min-width: 721px)');
-    const sync = () => { if (mq.matches) onClose(); };
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, [onClose]);
-
+  // Always close the overlay on selection. For in-page anchors we take over
+  // navigation and smooth-scroll *after* the close render + scroll unlock;
+  // any other link (e.g. mailto) consistently falls through to the browser.
   const go = (e) => {
-    const href = e.currentTarget.getAttribute('href');
-    if (href && href.charAt(0) === '#' && href.length > 1) {
-      const target = document.querySelector(href);
-      if (target) {
-        e.preventDefault();
-        onClose();
-        window.setTimeout(() => {
-          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          try { history.replaceState(null, '', href); } catch (_) {}
-        }, 60);
-        return;
-      }
-    }
+    const href = e.currentTarget.getAttribute('href') || '';
+    const target = href.charAt(0) === '#' && href.length > 1
+      ? document.querySelector(href)
+      : null;
     onClose();
+    if (target) {
+      e.preventDefault();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        try { history.replaceState(null, '', href); } catch (_) {}
+      }));
+    }
   };
 
   const links = [
@@ -293,11 +351,16 @@ function MobileMenu({ open, onClose, t }) {
   return (
     <div
       id="mobile-menu"
+      ref={dialogRef}
       className={`m-menu${open ? ' open' : ''}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t.nav.menu || 'Menu'}
       aria-hidden={!open}
+      tabIndex={-1}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <nav className="m-menu-links" aria-label="Mobile">
+      <nav className="m-menu-links" aria-label="Mobile navigation">
         {links.map(([idx, href, label]) => (
           <a key={href} href={href} onClick={go}>
             <span className="idx">{idx}</span>{label}
@@ -305,8 +368,14 @@ function MobileMenu({ open, onClose, t }) {
         ))}
       </nav>
       <div className="m-menu-foot">
-        <span>{t.foot.a_v}</span>
-        <a href={`mailto:${t.foot.b_v}`}>{t.foot.b_v}</a>
+        <div className="m-menu-foot-col">
+          <span className="lbl">{t.foot.a}</span>
+          <span>{t.foot.a_v}</span>
+        </div>
+        <div className="m-menu-foot-col">
+          <span className="lbl">{t.foot.b}</span>
+          <a href={`mailto:${t.foot.b_v}`}>{t.foot.b_v}</a>
+        </div>
       </div>
     </div>
   );
@@ -1045,7 +1114,12 @@ function App() {
   const [open, setOpen] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = React.useCallback(() => setMenuOpen(false), []);
+  const isMobile = useMediaQuery('(max-width: 720px)');
   const [tw, setTweak] = useTweaks(TWEAK_DEFAULTS);
+
+  // Burger/overlay only exist on mobile; make sure a left-open menu can't
+  // strand the scroll lock when the viewport grows past the breakpoint.
+  useEffect(() => { if (!isMobile) setMenuOpen(false); }, [isMobile]);
 
   useEffect(() => {
     try { localStorage.setItem('galm.lang', lang); } catch (e) {}
@@ -1064,7 +1138,7 @@ function App() {
       <SiteIntro />
       <div className="grain"></div>
       <Nav lang={lang} setLang={setLang} t={t} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
-      <MobileMenu open={menuOpen} onClose={closeMenu} t={t} />
+      {isMobile && <MobileMenu open={menuOpen} onClose={closeMenu} t={t} />}
       <Hero t={t} />
       <div className="curtain-stack">
         <Ticker t={t} />

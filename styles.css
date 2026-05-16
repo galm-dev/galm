@@ -31,6 +31,7 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 body.intro-lock { overflow: hidden; }
+body.menu-lock { overflow: hidden; }
 
 ::selection { background: var(--accent); color: var(--accent-ink); }
 
@@ -1009,7 +1010,7 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   color: var(--accent);
 }
 .m-menu-foot {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px;
   padding-top: 28px;
   border-top: 1px solid var(--line);
@@ -1017,9 +1018,14 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
   font-size: 11px;
   letter-spacing: .06em;
   text-transform: uppercase;
-  color: var(--fg-3);
+  color: var(--fg-2);
 }
+.m-menu-foot-col { display: flex; flex-direction: column; gap: 6px; }
+.m-menu-foot-col:last-child { align-items: flex-end; text-align: right; }
+.m-menu-foot .lbl { color: var(--fg-3); font-size: 10px; letter-spacing: .1em; }
 .m-menu-foot a { color: var(--fg-2); }
+.m-menu:focus { outline: none; }
+.m-menu:focus-visible { outline: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .m-menu, .m-menu-links a { transition: opacity .25s ease; }
