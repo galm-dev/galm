@@ -27,6 +27,8 @@ body {
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
   overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
 }
 body.intro-lock { overflow: hidden; }
 
@@ -935,4 +937,192 @@ button { font: inherit; color: inherit; background: none; border: 0; cursor: poi
 @media (hover: none) {
   .product-card:hover .arrow { background: transparent; }
   .product-card:hover .arrow svg { stroke: var(--fg); transform: none; }
+}
+
+/* ─────────────────────────────────────────────
+   Mobile navigation: burger + full-screen menu
+   ───────────────────────────────────────────── */
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+}
+
+.nav-burger {
+  display: none;
+  position: relative;
+  width: 34px; height: 34px;
+  margin: -6px -8px -6px 2px;   /* bigger tap target, no layout shift */
+  padding: 0;
+  align-items: center; justify-content: center;
+  color: inherit;
+}
+.nav-burger span {
+  position: absolute; left: 8px; right: 8px;
+  height: 1.5px;
+  background: currentColor;
+  transition: transform .34s cubic-bezier(.2,.8,.2,1), opacity .2s ease;
+}
+.nav-burger span:nth-child(1) { transform: translateY(-4px); }
+.nav-burger span:nth-child(2) { transform: translateY(4px); }
+.nav-burger.is-open span:nth-child(1) { transform: translateY(0) rotate(45deg); }
+.nav-burger.is-open span:nth-child(2) { transform: translateY(0) rotate(-45deg); }
+
+.m-menu {
+  position: fixed; inset: 0;
+  z-index: 80;                  /* below nav (95 on mobile), above orb */
+  display: flex; flex-direction: column;
+  padding: 104px 28px 44px;
+  background: var(--bg);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .42s ease, visibility .42s ease;
+}
+.m-menu.open { opacity: 1; visibility: visible; pointer-events: auto; }
+.m-menu-links {
+  display: flex; flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+}
+.m-menu-links a {
+  display: flex; align-items: baseline; gap: 14px;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(40px, 13vw, 76px);
+  letter-spacing: -0.035em;
+  line-height: 1.06;
+  color: var(--fg);
+  transform: translateY(20px);
+  opacity: 0;
+  transition: transform .55s cubic-bezier(.2,.8,.2,1), opacity .55s ease;
+}
+.m-menu.open .m-menu-links a { transform: translateY(0); opacity: 1; }
+.m-menu.open .m-menu-links a:nth-child(1) { transition-delay: .08s; }
+.m-menu.open .m-menu-links a:nth-child(2) { transition-delay: .14s; }
+.m-menu.open .m-menu-links a:nth-child(3) { transition-delay: .20s; }
+.m-menu-links a:active { color: var(--accent); }
+.m-menu-links .idx {
+  font-family: var(--mono);
+  font-weight: 400;
+  font-size: 12px;
+  letter-spacing: .12em;
+  color: var(--accent);
+}
+.m-menu-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.m-menu-foot a { color: var(--fg-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .m-menu, .m-menu-links a { transition: opacity .25s ease; }
+  .m-menu-links a { transform: none; }
+  .nav-burger span { transition: opacity .2s ease; }
+}
+
+/* ─────────────────────────────────────────────
+   Phone breakpoints
+   ───────────────────────────────────────────── */
+@media (min-width: 721px) {
+  .m-menu { display: none; }
+}
+
+@media (max-width: 720px) {
+  .nav { z-index: 95; padding: 16px 20px; }
+  .nav-links { display: none; }
+  .nav-burger { display: flex; }
+  .nav-r { gap: 16px; }
+  .logo-word { font-size: 22px; }
+}
+
+@media (max-width: 600px) {
+  :root { --hero-scroll-height: 320vh; }
+  .container { padding: 0 20px; }
+
+  /* Hero */
+  .hero-inner { padding: 92px 20px 28px; }
+  .eyebrow { font-size: 10px; gap: 8px; }
+  .eyebrow::before { width: 16px; }
+  .hero-headline {
+    font-size: clamp(30px, 9.5vw, 58px);
+    margin-top: 16px;
+  }
+  .hero-bottom { margin-top: 30px; gap: 22px; }
+  .hero-sub { font-size: 15px; max-width: 34ch; }
+  .hero-meta { font-size: 10px; }
+  .hero-meta .row { gap: 10px; }
+  .hero-scrollhint { bottom: 14px; }
+
+  /* Ticker */
+  .ticker { padding: 11px 0; }
+  .ticker-inner { font-size: 26px; gap: 30px; }
+  .ticker-inner span { gap: 30px; }
+  .ticker-inner .dot { width: 7px; height: 7px; }
+  .ticker-between { margin: 0; }
+
+  /* Sections */
+  .section { padding: 72px 20px; }
+  .section-tag { margin-bottom: 36px; }
+
+  /* Products */
+  .products-head { margin-bottom: 36px; gap: 12px; }
+  .products-title { font-size: clamp(32px, 9vw, 58px); }
+  .product-card {
+    padding: 24px;
+    min-height: 320px;
+    border-radius: 18px;
+  }
+  .product-card .name { font-size: clamp(34px, 9.5vw, 52px); }
+  .product-card .desc {
+    font-size: 13.5px;
+    max-width: none;
+    padding-right: 52px;
+  }
+  .product-card .arrow {
+    right: 20px; bottom: 20px;
+    width: 42px; height: 42px;
+  }
+  .product-card .arrow svg { width: 16px; height: 16px; }
+  .product-card .top { gap: 12px; align-items: flex-start; }
+  .product-card .badge { flex-shrink: 0; white-space: nowrap; }
+  .doc-mock { top: 20px; right: -16px; width: 56%; opacity: .55; }
+  .globe { width: 200px; height: 200px; right: -50px; top: 30%; opacity: .7; }
+  .copilot-world { max-width: 74%; }
+
+  /* Manifesto */
+  .manifesto-grid { gap: 32px; }
+  .manifesto { font-size: clamp(24px, 7vw, 40px); }
+  .manifesto-side { gap: 24px; }
+  .principle { padding-top: 18px; gap: 14px; }
+  .principle-num { width: 30px; }
+  .principle-body { font-size: 14px; }
+
+  /* Footer */
+  .foot { padding: 64px 16px 32px; overflow: hidden; }
+  .foot-mark { font-size: 24vw; letter-spacing: -0.055em; }
+  .foot-row { margin-top: 40px; gap: 18px; }
+
+  /* Modal as bottom sheet */
+  .modal-bg { padding: 14px; align-items: flex-end; }
+  .modal {
+    padding: 24px;
+    border-radius: 20px;
+    max-height: 86vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .modal h3 { font-size: 30px; }
+  .modal .feats { margin-top: 18px; }
+
+  /* Orb */
+  .orb { bottom: 18px; right: 18px; width: 50px; height: 50px; }
+  .orb svg { width: 20px; height: 20px; }
+  .orb-tip { display: none; }
 }

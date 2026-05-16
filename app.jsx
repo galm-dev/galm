@@ -220,17 +220,95 @@ function Lang({ lang, setLang }) {
 }
 
 // ─── Nav ───
-function Nav({ lang, setLang, t }) {
+function Nav({ lang, setLang, t, menuOpen, setMenuOpen }) {
   return (
     <nav className="nav">
       <Logo />
       <div className="nav-r">
-        <a href="#products">{t.nav.products}</a>
-        <a href="#manifesto">{t.nav.manifesto}</a>
-        <a href="#contact">{t.nav.contact}</a>
+        <div className="nav-links">
+          <a href="#products">{t.nav.products}</a>
+          <a href="#manifesto">{t.nav.manifesto}</a>
+          <a href="#contact">{t.nav.contact}</a>
+        </div>
         <Lang lang={lang} setLang={setLang} />
+        <button
+          type="button"
+          className={`nav-burger${menuOpen ? ' is-open' : ''}`}
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={menuOpen}
+          aria-controls="mobile-menu"
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          <span></span><span></span>
+        </button>
       </div>
     </nav>
+  );
+}
+
+// ─── Mobile menu ───
+function MobileMenu({ open, onClose, t }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [open, onClose]);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 721px)');
+    const sync = () => { if (mq.matches) onClose(); };
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, [onClose]);
+
+  const go = (e) => {
+    const href = e.currentTarget.getAttribute('href');
+    if (href && href.charAt(0) === '#' && href.length > 1) {
+      const target = document.querySelector(href);
+      if (target) {
+        e.preventDefault();
+        onClose();
+        window.setTimeout(() => {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          try { history.replaceState(null, '', href); } catch (_) {}
+        }, 60);
+        return;
+      }
+    }
+    onClose();
+  };
+
+  const links = [
+    ['01', '#products', t.nav.products],
+    ['02', '#manifesto', t.nav.manifesto],
+    ['03', '#contact', t.nav.contact],
+  ];
+
+  return (
+    <div
+      id="mobile-menu"
+      className={`m-menu${open ? ' open' : ''}`}
+      aria-hidden={!open}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <nav className="m-menu-links" aria-label="Mobile">
+        {links.map(([idx, href, label]) => (
+          <a key={href} href={href} onClick={go}>
+            <span className="idx">{idx}</span>{label}
+          </a>
+        ))}
+      </nav>
+      <div className="m-menu-foot">
+        <span>{t.foot.a_v}</span>
+        <a href={`mailto:${t.foot.b_v}`}>{t.foot.b_v}</a>
+      </div>
+    </div>
   );
 }
 
@@ -944,6 +1022,8 @@ function App() {
     try { return localStorage.getItem('galm.lang') || 'en'; } catch (e) { return 'en'; }
   });
   const [open, setOpen] = useState(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = React.useCallback(() => setMenuOpen(false), []);
   const [tw, setTweak] = useTweaks(TWEAK_DEFAULTS);
 
   useEffect(() => {
@@ -962,7 +1042,8 @@ function App() {
     <div className="shell">
       <SiteIntro />
       <div className="grain"></div>
-      <Nav lang={lang} setLang={setLang} t={t} />
+      <Nav lang={lang} setLang={setLang} t={t} menuOpen={menuOpen} setMenuOpen={setMenuOpen} />
+      <MobileMenu open={menuOpen} onClose={closeMenu} t={t} />
       <Hero t={t} />
       <div className="curtain-stack">
         <Ticker t={t} />
