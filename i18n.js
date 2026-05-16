@@ -1,7 +1,7 @@
 // GALM i18n — EN / PT-BR
 window.GALM_I18N = {
   en: {
-    nav: { products: "Products", manifesto: "Manifesto", contact: "Contact" },
+    nav: { products: "Products", manifesto: "Manifesto", contact: "Contact", menu: "Menu" },
     hero: {
       eyebrow: "GALM / 2026 / SANTOS · Brazil",
       h1a: "Global trade,",
@@ -84,7 +84,7 @@ window.GALM_I18N = {
     orb: { tip: "Copilot — coming soon" },
   },
   pt: {
-    nav: { products: "Produtos", manifesto: "Manifesto", contact: "Contato" },
+    nav: { products: "Produtos", manifesto: "Manifesto", contact: "Contato", menu: "Menu" },
     hero: {
       eyebrow: "GALM / 2026 / SANTOS · Brasil",
       h1a: "Comércio global,",
