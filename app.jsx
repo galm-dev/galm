@@ -166,7 +166,7 @@ function Lang({ lang, setLang }) {
   const onPointerUp = (event) => {
     const start = dragStartRef.current;
     if (!start) return;
-    if (start.dragged || start.startedOnTrack) updateFromPointer(event, true);
+    updateFromPointer(event, true);
     finishPointer(event);
   };
 
